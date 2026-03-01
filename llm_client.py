@@ -1,6 +1,14 @@
 import os
+import sys
+import io
 from dotenv import load_dotenv
 from openai import OpenAI
+
+# 强制 UTF-8 编码，修复 Streamlit Cloud 中文乱码问题
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+if sys.stderr.encoding != 'utf-8':
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 # 加载 .env
 load_dotenv()
@@ -26,8 +34,12 @@ def chat(model, system, user, temperature=0.3):
         temperature=temperature,
     )
     return response.choices[0].message.content
+
 def chat_with_image(image_b64: str, mime_type: str, prompt: str, model="qwen-vl-plus", temperature=0.1):
     client = get_client()
+    # 确保 prompt 是 UTF-8 字符串
+    if isinstance(prompt, bytes):
+        prompt = prompt.decode("utf-8")
     response = client.chat.completions.create(
         model=model,
         messages=[
