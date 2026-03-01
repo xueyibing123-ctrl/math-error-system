@@ -4,3 +4,8 @@ backgroundColor = "#F7F9FC"
 secondaryBackgroundColor = "#FFFFFF"
 textColor = "#1A1D2E"
 font = "sans serif"
+[server]
+enableCORS = false
+
+[runner]
+magicEnabled = true

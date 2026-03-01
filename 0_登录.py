@@ -1,4 +1,6 @@
 import os
+os.environ["PYTHONUTF8"] = "1"
+os.environ["PYTHONIOENCODING"] = "utf-8"
 import streamlit as st
 from dotenv import load_dotenv
 from db import init_db, login_user, register_user
