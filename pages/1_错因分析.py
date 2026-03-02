@@ -176,7 +176,7 @@ if st.button("开始分析", type="primary"):
                 st.session_state.drill_items = None
                 st.session_state.drill_mastery = {}
             except Exception as e:
-                st.error(f"发生错误：{e}")
+                st.exception(e)
 
 # 展示分析结果
 if st.session_state.analysis_result:
@@ -245,7 +245,7 @@ if st.session_state.main_error != "UNKNOWN" and st.session_state.error_count >= 
             st.session_state.drill_items = normalize_drill_items(drill_data)
         except Exception as e:
             st.session_state.drill_error = str(e)
-            st.error(f"生成失败：{e}")
+            st.exception(e)
 
     if st.session_state.drill_items:
         st.markdown("### 📚 训练题列表（打卡）")
