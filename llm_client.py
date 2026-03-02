@@ -13,7 +13,7 @@ def _post(payload: dict) -> dict:
     if not api_key:
         raise RuntimeError("未检测到 DASHSCOPE_API_KEY，请检查 .env 或 Secrets 配置")
 
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
     req = urllib.request.Request(
         BASE_URL,
         data=body,
