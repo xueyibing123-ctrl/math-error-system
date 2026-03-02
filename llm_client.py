@@ -1,5 +1,5 @@
 import os
-import requests
+import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -18,50 +18,49 @@ def _get_headers():
 
 
 def chat(model, system, user, temperature=0.3):
-    # 使用 json= 参数，requests 自动处理编码，中文转为 \uXXXX 纯ASCII
-    resp = requests.post(
-        BASE_URL,
-        headers=_get_headers(),
-        json={
-            "model": model,
-            "temperature": temperature,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-        },
-        timeout=60,
-    )
+    with httpx.Client(timeout=60) as client:
+        resp = client.post(
+            BASE_URL,
+            headers=_get_headers(),
+            json={
+                "model": model,
+                "temperature": temperature,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+            },
+        )
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]
 
 
 def chat_with_image(image_b64: str, mime_type: str, prompt: str, model="qwen-vl-plus", temperature=0.1):
-    resp = requests.post(
-        BASE_URL,
-        headers=_get_headers(),
-        json={
-            "model": model,
-            "temperature": temperature,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{mime_type};base64,{image_b64}"
+    with httpx.Client(timeout=60) as client:
+        resp = client.post(
+            BASE_URL,
+            headers=_get_headers(),
+            json={
+                "model": model,
+                "temperature": temperature,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{mime_type};base64,{image_b64}"
+                                },
                             },
-                        },
-                        {
-                            "type": "text",
-                            "text": prompt,
-                        },
-                    ],
-                }
-            ],
-        },
-        timeout=60,
-    )
+                            {
+                                "type": "text",
+                                "text": prompt,
+                            },
+                        ],
+                    }
+                ],
+            },
+        )
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]
