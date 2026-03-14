@@ -16,7 +16,7 @@ def get_conn():
 
 def init_db():
     pass
-    conn.close()
+ 
 
 
 def save_record(student_id, question, student_answer, error_tag, feedback):
