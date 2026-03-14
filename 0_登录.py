@@ -367,8 +367,10 @@ if not st.session_state.logged_in:
                     if role == "teacher":
                         from db import get_conn
                         conn = get_conn()
-                        conn.execute("UPDATE users SET role='teacher' WHERE username=?", (reg_name,))
+                        cur = conn.cursor()
+                        cur.execute("UPDATE users SET role='teacher' WHERE username=%s", (reg_name,))
                         conn.commit()
+                        cur.close()
                         conn.close()
                         st.success(f"✅ 教师账号注册成功！负责班级：{reg_class}")
                     else:
