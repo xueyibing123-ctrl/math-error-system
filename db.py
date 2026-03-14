@@ -15,82 +15,7 @@ def get_conn():
 
 
 def init_db():
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id SERIAL PRIMARY KEY,
-            username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL,
-            role TEXT NOT NULL DEFAULT 'student',
-            class_name TEXT,
-            created_at TEXT
-        )
-    """)
-
-    cur.execute("""
-        INSERT INTO users (username, password, role, created_at)
-        VALUES ('teacher', 'teacher123', 'teacher', %s)
-        ON CONFLICT (username) DO NOTHING
-    """, (datetime.now().isoformat(),))
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS wrong_records (
-            id SERIAL PRIMARY KEY,
-            student_id TEXT,
-            question TEXT NOT NULL,
-            student_answer TEXT NOT NULL,
-            error_tag TEXT NOT NULL,
-            feedback TEXT,
-            created_at TEXT NOT NULL
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS alerts (
-            id SERIAL PRIMARY KEY,
-            student_id TEXT,
-            error_code TEXT NOT NULL,
-            error_count INTEGER NOT NULL,
-            threshold INTEGER NOT NULL,
-            status TEXT NOT NULL DEFAULT 'OPEN',
-            triggered_at TEXT NOT NULL
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS error_tags (
-            id SERIAL PRIMARY KEY,
-            code TEXT UNIQUE NOT NULL,
-            name TEXT NOT NULL,
-            description TEXT,
-            drill_threshold INTEGER NOT NULL DEFAULT 3,
-            enable_drill INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL
-        )
-    """)
-
-    defaults = [
-        ("A1", "数字抄写错误", "抄题时数字写错", 3, 1),
-        ("A2", "计算过程错误", "运算步骤出错", 3, 1),
-        ("A3", "基础技能薄弱", "基础运算能力不足", 3, 1),
-        ("B1", "关键概念识别错误", "单位或关键词理解偏差", 3, 1),
-        ("B2", "运算类型误判", "加减乘除选择错误", 3, 1),
-        ("B3", "变式迁移失败", "换一种说法就不会了", 3, 1),
-        ("C1", "综合结构理解困难", "多步骤题目结构混乱", 3, 1),
-        ("C2", "畏难情绪放弃", "遇难直接放弃不尝试", 5, 0),
-        ("C3", "抽象关系建模能力不足", "无法建立数量关系", 3, 1),
-    ]
-    for code, name, desc, threshold, enable in defaults:
-        cur.execute("""
-            INSERT INTO error_tags (code, name, description, drill_threshold, enable_drill, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (code) DO NOTHING
-        """, (code, name, desc, threshold, enable, datetime.now().isoformat()))
-
-    conn.commit()
-    cur.close()
+    pass
     conn.close()
 
 
@@ -357,4 +282,4 @@ def get_student_trend(student_id, days=30):
 
 
 def init_users_table():
-    init_db()
+    pass
