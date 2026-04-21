@@ -5,7 +5,6 @@ from datetime import datetime, timedelta
 from db import get_recent_records, get_error_stats, list_alerts, resolve_alert, get_conn
 from ui import icon_title
 
-# 登录守卫
 if not st.session_state.get("logged_in"):
     st.warning("请先登录")
     st.stop()
@@ -17,24 +16,34 @@ if role not in ("teacher", "admin"):
 
 icon_title("assets/icons/教师后台.svg", "教师后台")
 
+def get_teacher_classes(user):
+    """返回教师负责的班级列表，支持多班级（逗号分隔）"""
+    class_name = user.get("class_name", "")
+    if not class_name:
+        return []
+    return [c.strip() for c in class_name.split(",") if c.strip()]
+
 # ── 数据准备
-teacher_class = st.session_state.get("user", {}).get("class_name")
-if teacher_class and role != "admin":
+teacher_classes = get_teacher_classes(st.session_state.get("user", {}))
+
+if teacher_classes and role != "admin":
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("""
+    placeholders = ",".join(["%s"] * len(teacher_classes))
+    cur.execute(f"""
         SELECT r.id, r.student_id, r.question, r.student_answer,
                r.error_tag, r.feedback, r.created_at
         FROM wrong_records r
         LEFT JOIN users u ON r.student_id = u.username
-        WHERE u.class_name = %s
+        WHERE u.class_name = ANY(%s::text[])
         ORDER BY r.created_at DESC LIMIT 500
-    """, (teacher_class,))
+    """, (teacher_classes,))
     rows = cur.fetchall()
     cur.close()
     conn.close()
     rows = [tuple(r.values()) for r in rows]
-    st.caption(f"当前显示：**{teacher_class}** 的数据")
+    classes_display = "、".join(teacher_classes)
+    st.caption(f"当前显示：**{classes_display}** 的数据")
 else:
     rows = get_recent_records(limit=500)
 
@@ -48,16 +57,14 @@ if not rows:
     with tab1:
         st.info("暂无数据，学生完成分析后此处会显示统计信息。")
 else:
-    df_all = pd.DataFrame(rows, columns=["id", "student_id", "question", "student_answer", "error_tag", "feedback", "created_at"])
+    df_all = pd.DataFrame(rows, columns=["id","student_id","question","student_answer","error_tag","feedback","created_at"])
     df_all["created_at"] = pd.to_datetime(df_all["created_at"])
     df_all["date"] = df_all["created_at"].dt.date
 
     with tab1:
         col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("总答题记录", len(df_all))
-        with col2:
-            st.metric("涉及学生数", df_all["student_id"].nunique())
+        with col1: st.metric("总答题记录", len(df_all))
+        with col2: st.metric("涉及学生数", df_all["student_id"].nunique())
         with col3:
             alert_rows = list_alerts(status="OPEN")
             st.metric("未处理预警", len(alert_rows), delta="需关注" if alert_rows else None)
@@ -68,11 +75,11 @@ else:
             st.subheader("错因占比")
             stats = get_error_stats(limit=20)
             if stats:
-                df_stats = pd.DataFrame(stats, columns=["错因", "次数"])
+                df_stats = pd.DataFrame(stats, columns=["错因","次数"])
                 fig_pie = px.pie(df_stats, names="错因", values="次数",
                                  color_discrete_sequence=px.colors.qualitative.Set3, hole=0.35)
                 fig_pie.update_traces(textposition="inside", textinfo="percent+label")
-                fig_pie.update_layout(margin=dict(t=20, b=20, l=20, r=20), height=320)
+                fig_pie.update_layout(margin=dict(t=20,b=20,l=20,r=20), height=320)
                 st.plotly_chart(fig_pie, use_container_width=True)
         with col_bar:
             st.subheader("错因排行榜")
@@ -80,16 +87,16 @@ else:
                 df_stats_sorted = df_stats.sort_values("次数", ascending=True)
                 fig_bar = px.bar(df_stats_sorted, x="次数", y="错因", orientation="h",
                                  color="次数", color_continuous_scale="Blues")
-                fig_bar.update_layout(margin=dict(t=20, b=20, l=20, r=20), height=320,
+                fig_bar.update_layout(margin=dict(t=20,b=20,l=20,r=20), height=320,
                                       showlegend=False, coloraxis_showscale=False)
                 st.plotly_chart(fig_bar, use_container_width=True)
 
         st.divider()
         st.subheader("🔴 高风险学生（同一错因出现 ≥3 次）")
-        risk_df = (df_all.groupby(["student_id", "error_tag"]).size()
+        risk_df = (df_all.groupby(["student_id","error_tag"]).size()
                    .reset_index(name="次数").query("次数 >= 3")
                    .sort_values("次数", ascending=False)
-                   .rename(columns={"student_id": "学生", "error_tag": "错因"}))
+                   .rename(columns={"student_id":"学生","error_tag":"错因"}))
         if risk_df.empty:
             st.success("暂无高风险学生 🎉")
         else:
@@ -103,11 +110,11 @@ else:
         if df_recent.empty:
             st.info(f"最近 {days} 天暂无数据")
         else:
-            df_trend = df_recent.groupby(["date", "error_tag"]).size().reset_index(name="次数")
+            df_trend = df_recent.groupby(["date","error_tag"]).size().reset_index(name="次数")
             fig_line = px.line(df_trend, x="date", y="次数", color="error_tag", markers=True,
-                               labels={"date": "日期", "error_tag": "错因"},
+                               labels={"date":"日期","error_tag":"错因"},
                                color_discrete_sequence=px.colors.qualitative.Set1)
-            fig_line.update_layout(height=400, margin=dict(t=20, b=20), hovermode="x unified")
+            fig_line.update_layout(height=400, margin=dict(t=20,b=20), hovermode="x unified")
             st.plotly_chart(fig_line, use_container_width=True)
 
         st.divider()
@@ -115,13 +122,13 @@ else:
         all_students = sorted(df_all["student_id"].unique().tolist())
         selected_student = st.selectbox("选择学生", all_students)
         df_stu = df_all[df_all["student_id"] == selected_student]
-        df_stu_trend = df_stu.groupby(["date", "error_tag"]).size().reset_index(name="次数")
+        df_stu_trend = df_stu.groupby(["date","error_tag"]).size().reset_index(name="次数")
         if df_stu_trend.empty:
             st.info("该学生暂无记录")
         else:
             fig_stu = px.bar(df_stu_trend, x="date", y="次数", color="error_tag",
-                             labels={"date": "日期", "error_tag": "错因"}, barmode="stack")
-            fig_stu.update_layout(height=350, margin=dict(t=20, b=20))
+                             labels={"date":"日期","error_tag":"错因"}, barmode="stack")
+            fig_stu.update_layout(height=350, margin=dict(t=20,b=20))
             st.plotly_chart(fig_stu, use_container_width=True)
 
     with tab3:
@@ -130,16 +137,14 @@ else:
         if not alert_rows:
             st.success("暂无未处理预警 ✅")
         else:
-            df_alert = pd.DataFrame(alert_rows, columns=["学生姓名", "错误类型", "次数", "阈值", "状态", "触发时间"])
+            df_alert = pd.DataFrame(alert_rows, columns=["学生姓名","错误类型","次数","阈值","状态","触发时间"])
             st.dataframe(df_alert, use_container_width=True)
 
         st.divider()
         with st.expander("✅ 处理预警"):
             col1, col2 = st.columns(2)
-            with col1:
-                sid = st.text_input("学生姓名（可留空）", key="resolve_sid")
-            with col2:
-                ecode = st.text_input("错误类型（如 B2）", key="resolve_ecode")
+            with col1: sid = st.text_input("学生姓名（可留空）", key="resolve_sid")
+            with col2: ecode = st.text_input("错误类型（如 B2）", key="resolve_ecode")
             if st.button("标记为已处理", key="btn_resolve"):
                 resolve_alert(student_id=sid if sid else None, error_code=ecode)
                 st.success("已处理，刷新页面查看最新状态。")
@@ -148,15 +153,15 @@ else:
         st.subheader("📁 已处理预警记录")
         resolved = list_alerts(status="RESOLVED", limit=50)
         if resolved:
-            df_resolved = pd.DataFrame(resolved, columns=["学生姓名", "错误类型", "次数", "阈值", "状态", "触发时间"])
+            df_resolved = pd.DataFrame(resolved, columns=["学生姓名","错误类型","次数","阈值","状态","触发时间"])
             st.dataframe(df_resolved, use_container_width=True)
         else:
             st.info("暂无已处理记录")
 
     with tab4:
         st.subheader("📋 最近错题记录")
-        df_show = df_all[["id", "student_id", "error_tag", "created_at"]].copy()
-        df_show.columns = ["ID", "学生姓名", "错因", "时间"]
+        df_show = df_all[["id","student_id","error_tag","created_at"]].copy()
+        df_show.columns = ["ID","学生姓名","错因","时间"]
         st.dataframe(df_show, use_container_width=True)
         csv = df_show.to_csv(index=False).encode("utf-8-sig")
         st.download_button("⬇️ 导出全部记录", data=csv, file_name="all_records.csv", mime="text/csv")
@@ -173,7 +178,7 @@ if role == "admin":
         conn.close()
 
         df_users = pd.DataFrame([dict(r) for r in all_users])
-        df_users.columns = ["ID", "用户名", "角色", "班级", "注册时间"]
+        df_users.columns = ["ID","用户名","角色","班级","注册时间"]
         st.dataframe(df_users, use_container_width=True)
 
         st.divider()
@@ -196,6 +201,8 @@ if role == "admin":
         st.divider()
         st.subheader("✏️ 修改账号班级")
         CLASSES = [
+            "一年级1班","一年级2班","一年级3班","一年级4班",
+            "二年级1班","二年级2班","二年级3班","二年级4班",
             "三年级1班","三年级2班","三年级3班","三年级4班",
             "四年级1班","四年级2班","四年级3班","四年级4班",
             "五年级1班","五年级2班","五年级3班","五年级4班",
@@ -203,13 +210,14 @@ if role == "admin":
         ]
         if usernames:
             edit_user = st.selectbox("选择账号", usernames, key="edit_user")
-            new_class = st.selectbox("修改为", CLASSES, key="new_class")
+            new_classes = st.multiselect("修改为（可多选）", CLASSES, key="new_class")
             if st.button("保存修改", key="btn_edit"):
+                new_class_str = ",".join(new_classes)
                 conn = get_conn()
                 cur = conn.cursor()
-                cur.execute("UPDATE users SET class_name=%s WHERE username=%s", (new_class, edit_user))
+                cur.execute("UPDATE users SET class_name=%s WHERE username=%s", (new_class_str, edit_user))
                 conn.commit()
                 cur.close()
                 conn.close()
-                st.success(f"已将 {edit_user} 的班级改为 {new_class}")
+                st.success(f"已将 {edit_user} 的班级改为 {new_class_str}")
                 st.rerun()
