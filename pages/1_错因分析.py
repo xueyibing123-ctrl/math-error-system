@@ -22,11 +22,13 @@ AVAILABLE_MODELS = {
     "qwen-max（通义千问·默认）": "qwen-max",
     "qwen-plus（通义千问·快速便宜）": "qwen-plus",
     "qwen2.5-math-72b（通义数学专项）": "qwen2.5-math-72b-instruct",
-    "deepseek-v4（DeepSeek·最新版）": "deepseek-chat",   # DeepSeek 官方 latest 别名
+    "deepseek-v4（DeepSeek·最新版）": "deepseek-chat",
     "deepseek-r1（DeepSeek·链式推理）": "deepseek-reasoner",
     "deepseek-v3（DeepSeek·上一代）": "deepseek-v3",
     "glm-4-plus（智谱·通用）": "glm-4-plus",
     "glm-4-flash（智谱·快速免费）": "glm-4-flash",
+    "doubao-pro-32k（豆包·通用）": "doubao-pro-32k",
+    "doubao-1.5-pro（豆包·最新）": "doubao-1.5-pro-32k",
 }
 
 DEFAULT_MODEL = os.getenv("DASHSCOPE_MODEL", "qwen-max")

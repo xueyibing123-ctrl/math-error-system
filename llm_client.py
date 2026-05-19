@@ -19,6 +19,10 @@ _PROVIDERS = {
         "base_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
         "api_key_env": "ZHIPU_API_KEY",
     },
+    "volc": {
+        "base_url": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+        "api_key_env": "VOLC_API_KEY",
+    },
 }
 
 # 模型名前缀 → 提供商映射
@@ -26,6 +30,8 @@ _MODEL_PROVIDER = {
     "qwen": "dashscope",
     "deepseek": "deepseek",
     "glm": "zhipu",
+    "doubao": "volc",
+    "ep-": "volc",   # 火山引擎 endpoint ID 格式
 }
 
 
