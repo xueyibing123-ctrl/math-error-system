@@ -79,14 +79,14 @@ def chat(model, system, user, temperature=0.3):
 
 
 def chat_with_image(image_b64: str, mime_type: str, prompt: str, model="qwen-vl-plus", temperature=0.1):
-    # 图片识别固定走 DashScope（其他平台暂不支持）
-    provider = _PROVIDERS["dashscope"]
+    """支持多平台视觉模型：qwen-vl*(DashScope)、glm-4v*(智谱)"""
+    provider = _get_provider(model)
     api_key = os.getenv(provider["api_key_env"])
     if not api_key:
-        raise RuntimeError("未检测到 DASHSCOPE_API_KEY")
+        raise RuntimeError(f"未检测到 {provider['api_key_env']}")
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     try:
-        with httpx.Client(timeout=60) as client:
+        with httpx.Client(timeout=90) as client:
             resp = client.post(
                 provider["base_url"],
                 headers=headers,

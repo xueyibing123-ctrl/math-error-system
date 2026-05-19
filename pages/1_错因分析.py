@@ -18,6 +18,15 @@ if not st.session_state.get("logged_in"):
 load_dotenv()
 
 # 可供切换的模型列表（DashScope 兼容接口）
+# OCR 视觉识别模型（负责从图片提取题目文字）
+OCR_MODELS = {
+    "qwen-vl-plus（通义视觉·默认）": "qwen-vl-plus",
+    "qwen-vl-max（通义视觉·高精度）": "qwen-vl-max",
+    "glm-4v-flash（智谱视觉·快速）": "glm-4v-flash",
+    "glm-4v-plus（智谱视觉·高精度）": "glm-4v-plus",
+}
+
+# 分析模型（负责错因判断、错误分析）
 AVAILABLE_MODELS = {
     "qwen-max（通义千问·默认）": "qwen-max",
     "qwen-plus（通义千问·快速便宜）": "qwen-plus",
@@ -202,22 +211,33 @@ icon_title("assets/icons/错因分析.svg", "错因分析")
 st.markdown("上传题目与学生解题步骤，AI识别错因并温和引导。")
 
 # ── 科目 & 模型选择 ───────────────────────────────────
-col_subj, col_model = st.columns([1, 2])
+col_subj, col_ocr, col_model = st.columns([1, 1.5, 1.5])
 with col_subj:
     SUBJECT = st.selectbox(
         "📚 学科",
         ["数学", "语文", "英语", "物理", "化学", "历史", "政治", "生物", "地理", "其他"],
         key="subject_select"
     )
+with col_ocr:
+    ocr_label = st.selectbox(
+        "📷 OCR识题模型",
+        list(OCR_MODELS.keys()),
+        key="ocr_model_select",
+        help="负责从图片中提取题目文字，专业视觉模型更准确"
+    )
 with col_model:
     model_label = st.selectbox(
-        "🤖 分析模型（可切换测试）",
+        "🧠 错因分析模型",
         list(AVAILABLE_MODELS.keys()),
         key="model_select",
-        help="切换不同模型对比批改准确率"
+        help="负责判断对错、分析错因，推理能力强的模型更准"
     )
+
+OCR_MODEL = OCR_MODELS[ocr_label]
 MODEL = AVAILABLE_MODELS[model_label]
 
+# 显示当前流水线
+st.caption(f"当前方案：**{ocr_label.split('（')[0]}** 识题 → **{model_label.split('（')[0]}** 分析")
 st.divider()
 
 # ── 图片上传区域 ──────────────────────────────────────
@@ -250,6 +270,7 @@ if uploaded_img is not None:
                     ocr_text = chat_with_image(
                         image_b64=img_b64,
                         mime_type=mime,
+                        model=OCR_MODEL,
                         prompt='请识别图片内容，分两部分：1）题目（含选项）2）学生解题步骤或答案。数学符号用$...$包裹LaTeX格式，如$x^2$、$\\sqrt{2}$。严格按JSON输出：{"题目": "...", "步骤": "..."}'
                     )
                     try:
@@ -277,6 +298,7 @@ if uploaded_img is not None:
                     ocr_raw = chat_with_image(
                         image_b64=img_b64,
                         mime_type=mime,
+                        model=OCR_MODEL,
                         prompt=FULL_PAGE_OCR_PROMPT
                     )
                     problems = safe_json_loads(ocr_raw)
