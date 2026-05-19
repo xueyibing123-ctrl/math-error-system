@@ -21,8 +21,8 @@ load_dotenv()
 VISION_MODELS = {
     "qwen-vl-plus（通义视觉·快速）": "qwen-vl-plus",
     "qwen-vl-max（通义视觉·高精度）": "qwen-vl-max",
-    "DeepSeek-VL2（DeepSeek视觉）": "deepseek-vl2",
     "Doubao-1.5-Vision-Pro（豆包视觉·旗舰）": "doubao-1-5-vision-pro-32k-250115",
+    "Doubao-1.5-Vision-Lite（豆包视觉·轻量）": "doubao-1-5-vision-lite-32k-250115",
     "GLM-4.6V（智谱视觉·通用）": "glm-4.6v",
     "GLM-4.1V-Thinking（智谱视觉·深度思考）": "glm-4.1v-thinking",
 }
