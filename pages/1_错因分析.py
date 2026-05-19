@@ -17,7 +17,7 @@ if not st.session_state.get("logged_in"):
 
 load_dotenv()
 
-# 视觉分析模型（整页识别+分析一次完成，必须是视觉模型）
+# 视觉模型（支持图片输入，可用于OCR识题 或 单模式识题+分析）
 VISION_MODELS = {
     "qwen-vl-plus（通义视觉·快速）": "qwen-vl-plus",
     "qwen-vl-max（通义视觉·高精度）": "qwen-vl-max",
@@ -25,9 +25,9 @@ VISION_MODELS = {
     "GLM-4.1V-Thinking（智谱视觉·深度思考）": "glm-4.1v-thinking",
 }
 
-# 纯文本分析模型（单题手动输入时使用）
-TEXT_MODELS = {
-    "qwen-max（通义千问·默认）": "qwen-max",
+# 分析模型（支持文本输入，用于错因判断）
+ANALYSIS_MODELS = {
+    "qwen-max（通义千问·推荐）": "qwen-max",
     "qwen-plus（通义千问·快速）": "qwen-plus",
     "qwen2.5-math-72b（通义数学专项）": "qwen2.5-math-72b-instruct",
     "DeepSeek-V4-Pro（最强·深度思考）": "deepseek-v4-pro",
@@ -38,6 +38,9 @@ TEXT_MODELS = {
     "GLM-4.7（智谱·多步推理）": "glm-4.7",
     "GLM-4-Flash（智谱·快速免费）": "glm-4-flash",
 }
+
+# 手动输入单题时可选的分析模型（同上）
+TEXT_MODELS = ANALYSIS_MODELS
 
 DEFAULT_MODEL = os.getenv("DASHSCOPE_MODEL", "qwen-max")
 
@@ -205,37 +208,36 @@ def annotate_image(img_bytes: bytes, wrong_nums: list, all_results: list) -> byt
 icon_title("assets/icons/错因分析.svg", "错因分析")
 st.markdown("上传题目与学生解题步骤，AI识别错因并温和引导。")
 
-# ── 学科 & 模型选择 ───────────────────────────────────
-col_subj, col_model = st.columns([1, 2])
-with col_subj:
-    SUBJECT = st.selectbox(
-        "📚 学科",
-        ["数学", "语文", "英语", "物理", "化学", "历史", "政治", "生物", "地理", "其他"],
-        key="subject_select"
-    )
-with col_model:
-    page_mode = st.radio(
-        "识题模式",
-        ["📷 拍照整页识别（快速）", "✏️ 手动输入单题"],
-        horizontal=True,
-        key="page_mode_radio",
-    )
+# ── 学科 & 模式选择 ───────────────────────────────────
+SUBJECT = st.selectbox(
+    "📚 学科",
+    ["数学", "语文", "英语", "物理", "化学", "历史", "政治", "生物", "地理", "其他"],
+    key="subject_select"
+)
+
+page_mode = st.radio(
+    "📋 模式选择",
+    ["📷 拍照整页·单模型（识题+分析一次完成，最快）",
+     "📷 拍照整页·双模型（OCR模型+分析模型，可自由搭配）",
+     "✏️ 手动输入单题"],
+    key="page_mode_radio",
+)
 
 st.divider()
 
 # ══════════════════════════════════════════════════════
-# 整页拍照模式（单次API调用，识别+分析一步完成）
+# 整页拍照模式 · 单模型（单次API调用）
 # ══════════════════════════════════════════════════════
-if page_mode == "📷 拍照整页识别（快速）":
+if page_mode == "📷 拍照整页·单模型（识题+分析一次完成，最快）":
 
     vision_label = st.selectbox(
         "🤖 视觉分析模型（识题+分析一次完成）",
         list(VISION_MODELS.keys()),
         key="vision_model_select",
-        help="视觉模型直接读图、判断对错、给出分析，一次API调用完成全部工作"
+        help="视觉模型直接读图判断对错给出分析，一次API调用搞定"
     )
     VISION_MODEL = VISION_MODELS[vision_label]
-    st.caption(f"模型：**{vision_label.split('（')[0]}** · 学科：**{SUBJECT}** · 一次调用完成识别+分析")
+    st.caption(f"⚡ 单次调用 · **{vision_label.split('（')[0]}** · 学科：**{SUBJECT}**")
 
     uploaded_img = st.file_uploader(
         "上传整页试卷照片",
@@ -363,6 +365,177 @@ if page_mode == "📷 拍照整页识别（快速）":
                     st.caption(r.get("题型判断", ""))
                     if r.get("温和反馈"):
                         st.info(r.get("温和反馈", ""))
+
+    st.stop()
+
+# ══════════════════════════════════════════════════════
+# 整页拍照模式 · 双模型（OCR + 分析分开选）
+# ══════════════════════════════════════════════════════
+elif page_mode == "📷 拍照整页·双模型（OCR模型+分析模型，可自由搭配）":
+
+    col_ocr, col_ana = st.columns(2)
+    with col_ocr:
+        ocr_label = st.selectbox(
+            "📷 OCR识题模型",
+            list(VISION_MODELS.keys()),
+            key="dual_ocr_select",
+            help="负责从图片提取题目文字"
+        )
+    with col_ana:
+        ana_label = st.selectbox(
+            "🧠 错因分析模型",
+            list(ANALYSIS_MODELS.keys()),
+            key="dual_ana_select",
+            help="负责判断对错、分析错因，推理能力强的模型更准"
+        )
+    OCR_MODEL = VISION_MODELS[ocr_label]
+    ANA_MODEL = ANALYSIS_MODELS[ana_label]
+    st.caption(f"🔗 双模型方案：**{ocr_label.split('（')[0]}** 识题 → **{ana_label.split('（')[0]}** 分析 · 学科：**{SUBJECT}**")
+
+    uploaded_img2 = st.file_uploader(
+        "上传整页试卷照片",
+        type=["jpg", "jpeg", "png"],
+        key="dual_full_page_img"
+    )
+
+    if uploaded_img2 is not None:
+        img_bytes_raw2 = uploaded_img2.read()
+        st.image(img_bytes_raw2, use_container_width=True)
+
+        if st.button("🔍 识别整页题目", key="btn_dual_ocr", type="primary"):
+            st.session_state.full_page_results = None
+            st.session_state.full_page_wrong_nums = []
+            st.session_state.annotated_img = None
+            st.session_state["dual_problems"] = None
+
+            with st.spinner("正在识别题目…"):
+                try:
+                    compressed2, mime2 = compress_image(img_bytes_raw2)
+                    img_b64_2 = base64.b64encode(compressed2).decode("utf-8")
+                    OCR_PROMPT = (
+                        f"学科：{SUBJECT}\n"
+                        "请识别图片中所有题目。对每道题提取：题号、题型、完整题目内容（含选项）、学生作答内容。\n"
+                        "数学/物理公式用$...$包裹LaTeX，语文/英语保持原文。\n"
+                        "严格输出JSON数组：\n"
+                        "[{\"题号\":\"1\",\"题型\":\"选择题\",\"题目\":\"...\",\"学生答案\":\"...\"}]\n"
+                        "只输出JSON，不要其他文字。"
+                    )
+                    ocr_raw = chat_with_image(image_b64=img_b64_2, mime_type=mime2,
+                                              model=OCR_MODEL, prompt=OCR_PROMPT)
+                    problems = safe_json_loads(ocr_raw)
+                    if isinstance(problems, list) and problems:
+                        st.session_state["dual_problems"] = problems
+                        st.session_state["dual_img_bytes"] = img_bytes_raw2
+                        st.success(f"识别完成，共发现 **{len(problems)}** 道题目")
+                    else:
+                        st.error("识别结果为空，请重试或换清晰图片")
+                except Exception as e:
+                    st.error(f"识别失败：{e}")
+
+    if st.session_state.get("dual_problems"):
+        problems = st.session_state["dual_problems"]
+        st.markdown(f"**已识别 {len(problems)} 道题目：**")
+        for p in problems:
+            with st.expander(f"第 {p.get('题号','?')} 题 · {p.get('题型','')}"):
+                st.write(f"**题目：** {p.get('题目','')}")
+                st.write(f"**学生答案：** {p.get('学生答案','')}")
+
+        if st.button("📊 分析所有题目错因", key="btn_dual_analyze", type="primary"):
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            def _analyze(prob, idx):
+                user_prompt = f"学科：{SUBJECT}\n\n题目：\n{prob.get('题目','')}\n\n学生作答：\n{prob.get('学生答案','')}"
+                result_raw = chat(model=ANA_MODEL, system=TEXT_SYSTEM_PROMPT, user=user_prompt, temperature=0.2)
+                return idx, safe_json_loads(result_raw)
+
+            all_results = [None] * len(problems)
+            wrong_nums = []
+            prog = st.progress(0, text="分析中…")
+            done = 0
+
+            with ThreadPoolExecutor(max_workers=5) as ex:
+                futs = {ex.submit(_analyze, p, i): i for i, p in enumerate(problems)}
+                for f in as_completed(futs):
+                    try:
+                        idx, data = f.result()
+                        prob = problems[idx]
+                        is_wrong = data.get("答案是否有误", False)
+                        tags = data.get("错因标签", [])
+                        if is_wrong and tags:
+                            wrong_nums.append(str(prob.get("题号", str(idx+1))))
+                            save_record(st.session_state.get("student_id", "unknown"),
+                                        prob.get("题目",""), prob.get("学生答案",""),
+                                        tags[0], data.get("温和反馈",""))
+                        all_results[idx] = {**prob, "data": data}
+                    except Exception as e:
+                        all_results[futs[f]] = {**problems[futs[f]], "data": None, "error": str(e)}
+                    done += 1
+                    prog.progress(done / len(problems), text=f"已完成 {done}/{len(problems)} 道")
+
+            prog.empty()
+            if wrong_nums and st.session_state.get("dual_img_bytes"):
+                st.session_state.annotated_img = annotate_image(
+                    st.session_state["dual_img_bytes"], wrong_nums, all_results)
+            st.session_state.full_page_results = all_results
+            st.session_state.full_page_wrong_nums = wrong_nums
+            st.rerun()
+
+    if st.session_state.get("full_page_results") and page_mode == "📷 拍照整页·双模型（OCR模型+分析模型，可自由搭配）":
+        results = st.session_state.full_page_results
+        wrong_nums = st.session_state.get("full_page_wrong_nums", [])
+        ERROR_DESC2 = {
+            "A1":"抄写/转录错误","A2":"解题过程错误","A3":"基础知识薄弱",
+            "B1":"关键概念识别错误","B2":"解题方法误判","B3":"知识迁移失败",
+            "C1":"综合理解困难","C2":"畏难情绪放弃","C3":"抽象思维不足",
+        }
+        if st.session_state.get("annotated_img"):
+            st.divider()
+            st.markdown("### 🔴 错题标注试卷")
+            st.image(st.session_state.annotated_img, caption="红色方框 = 错题区域", use_container_width=True)
+            st.download_button("⬇️ 下载标注图片", data=st.session_state.annotated_img,
+                               file_name="错题标注.png", mime="image/png", key="dl_annotated2")
+        st.divider()
+        if wrong_nums:
+            st.warning(f"共发现 **{len(wrong_nums)}** 道错题：第 {', '.join(wrong_nums)} 题")
+        else:
+            st.success("未发现明显错误，做得不错！")
+        st.markdown("### 📋 逐题分析报告")
+        for r in results:
+            if r is None:
+                continue
+            d = r.get("data")
+            num = str(r.get("题号","?"))
+            orig_q = r.get("题目","")
+            orig_a = r.get("学生答案","")
+            ques_type = r.get("题型","")
+            if d:
+                is_wrong = d.get("答案是否有误", False)
+                tags = d.get("错因标签", [])
+                if is_wrong:
+                    st.markdown(
+                        f"<div style='background:#FFF1F0;border-left:4px solid #FF4D4F;"
+                        f"border-radius:8px;padding:1rem 1.2rem;margin-bottom:1rem;'>"
+                        f"<b style='color:#CF1322;'>❌ 第 {num} 题{' · '+ques_type if ques_type else ''}（有误）</b>"
+                        f"</div>", unsafe_allow_html=True)
+                    with st.container(border=True):
+                        st.markdown(f"**📝 原题**\n\n{orig_q}")
+                        st.markdown(f"**✏️ 学生答案**\n\n{orig_a}")
+                        st.divider()
+                        st.markdown(f"**📌 题型判断**：{d.get('题型判断','-')}")
+                        for tag in tags:
+                            st.error(f"**{tag}** — {ERROR_DESC2.get(tag,'')}")
+                        for reason in d.get("判断理由",[]):
+                            st.markdown(f"• {reason}")
+                        for s in d.get("建议干预策略",[]):
+                            st.markdown(f"• {s}")
+                        st.info(d.get("温和反馈",""))
+                else:
+                    with st.expander(f"✅ 第 {num} 题{' · '+ques_type if ques_type else ''}（正确）"):
+                        st.markdown(orig_q)
+                        if d.get("温和反馈"):
+                            st.info(d.get("温和反馈",""))
+            elif r.get("error"):
+                st.error(f"第 {num} 题分析失败：{r['error']}")
 
     st.stop()
 
