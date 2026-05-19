@@ -260,22 +260,43 @@ if uploaded_img is not None:
                         except Exception:
                             result_raw = chat(model=MODEL, system=SYSTEM_PROMPT, user=user_prompt, temperature=0.0)
                             data = safe_json_loads(result_raw)
-                        all_results.append({"题号": prob.get("题号", str(i+1)), "data": data})
+                        all_results.append({
+                            "题号": prob.get("题号", str(i + 1)),
+                            "题目": prob.get("题目", ""),
+                            "学生答案": prob.get("学生答案", ""),
+                            "data": data,
+                        })
                         tags = data.get("错因标签", [])
                         if tags and tags[0] != "UNKNOWN":
-                            wrong_nums.append(str(prob.get("题号", str(i+1))))
-                            # save individual record
-                            main_err = tags[0]
+                            wrong_nums.append(str(prob.get("题号", str(i + 1))))
                             save_record(
                                 st.session_state.get("student_id", "unknown"),
                                 prob.get("题目", ""),
                                 prob.get("学生答案", ""),
-                                main_err,
+                                tags[0],
                                 data.get("温和反馈", "")
                             )
                     except Exception as e:
-                        all_results.append({"题号": prob.get("题号", str(i+1)), "data": None, "error": str(e)})
+                        all_results.append({
+                            "题号": prob.get("题号", str(i + 1)),
+                            "题目": prob.get("题目", ""),
+                            "学生答案": prob.get("学生答案", ""),
+                            "data": None,
+                            "error": str(e),
+                        })
                     progress.progress((i + 1) / len(problems), text=f"已分析 {i+1}/{len(problems)} 道")
+
+                # 分析完成后自动标注错题
+                if wrong_nums:
+                    progress.progress(1.0, text="正在标注错题位置…")
+                    try:
+                        boxes = get_wrong_positions(
+                            img_b64, mime, wrong_nums
+                        )
+                        if boxes:
+                            st.session_state.annotated_img = annotate_image(img_bytes_raw, boxes)
+                    except Exception:
+                        pass  # 标注失败不阻断主流程
 
                 st.session_state.full_page_results = all_results
                 st.session_state.full_page_wrong_nums = wrong_nums
@@ -292,68 +313,80 @@ if uploaded_img is not None:
                     "C1": "综合结构理解困难", "C2": "畏难情绪放弃", "C3": "抽象关系建模能力不足",
                 }
 
+                # ── 标注图优先展示 ────────────────────
+                if st.session_state.get("annotated_img"):
+                    st.divider()
+                    st.markdown("### 🔴 错题标注试卷")
+                    st.image(st.session_state.annotated_img,
+                             caption="红色圆圈 = 错题区域",
+                             use_container_width=True)
+                    st.download_button(
+                        "⬇️ 下载标注图片",
+                        data=st.session_state.annotated_img,
+                        file_name="错题标注.png",
+                        mime="image/png",
+                        key="dl_annotated"
+                    )
+
+                # ── 汇总提示 ─────────────────────────
+                st.divider()
                 if wrong_nums:
                     st.warning(f"共发现 **{len(wrong_nums)}** 道错题：第 {', '.join(wrong_nums)} 题")
                 else:
-                    st.success("未发现明显错误！")
+                    st.success("未发现明显错误，做得不错！")
 
+                # ── 逐题展示（错题展开，正确题折叠）────
+                st.markdown("### 📋 逐题分析报告")
                 for r in results:
                     d = r.get("data")
                     num = r.get("题号", "?")
+                    orig_q = r.get("题目", "")
+                    orig_a = r.get("学生答案", "")
+
                     if d:
                         tags = d.get("错因标签", [])
                         is_wrong = bool(tags and tags[0] != "UNKNOWN")
-                        label = "❌ 有误" if is_wrong else "✅ 正确"
-                        with st.expander(f"第 {num} 题分析结果  {label}"):
-                            st.markdown(f"**📌 题型判断**：{d.get('题型判断', '-')}")
-                            if is_wrong:
+
+                        if is_wrong:
+                            # 错题：直接展开显示完整分析
+                            st.markdown(
+                                f"<div style='background:#FFF1F0;border-left:4px solid #FF4D4F;"
+                                f"border-radius:8px;padding:1rem 1.2rem;margin-bottom:1rem;'>"
+                                f"<b style='font-size:1.05rem;color:#CF1322;'>❌ 第 {num} 题（有误）</b>"
+                                f"</div>",
+                                unsafe_allow_html=True
+                            )
+                            with st.container(border=True):
+                                st.markdown(f"**📝 原题**")
+                                st.write(orig_q)
+                                st.markdown(f"**✏️ 学生答案**")
+                                st.write(orig_a)
+                                st.divider()
+                                st.markdown(f"**📌 题型判断**：{d.get('题型判断', '-')}")
+
                                 st.markdown("**🏷️ 错因标签**")
                                 for tag in tags:
                                     st.error(f"**{tag}** — {ERROR_DESC.get(tag, '')}")
+
                                 st.markdown("**🔍 判断理由**")
                                 for reason in d.get("判断理由", []):
                                     st.write(f"• {reason}")
+
                                 st.markdown("**💡 建议干预策略**")
                                 for s in d.get("建议干预策略", []):
                                     st.write(f"• {s}")
-                            st.info(d.get("温和反馈", ""))
+
+                                st.markdown("**💬 温和反馈**")
+                                st.info(d.get("温和反馈", ""))
+                        else:
+                            # 正确题：折叠显示
+                            with st.expander(f"✅ 第 {num} 题（正确）"):
+                                st.write(orig_q)
+                                st.caption(d.get("题型判断", ""))
+                                if d.get("温和反馈"):
+                                    st.info(d.get("温和反馈", ""))
                     elif r.get("error"):
                         st.error(f"第 {num} 题分析失败：{r['error']}")
-
-                # ── 标注错题红色圆圈 ──────────────────
-                if wrong_nums:
-                    st.divider()
-                    st.markdown("**🔴 错题圆圈标注**")
-                    if st.button("在原图上用红色圆圈标注错题", key="btn_annotate"):
-                        with st.spinner("正在定位错题区域并标注…"):
-                            try:
-                                boxes = get_wrong_positions(
-                                    st.session_state.full_page_img_b64,
-                                    st.session_state.full_page_mime,
-                                    wrong_nums
-                                )
-                                if boxes:
-                                    annotated = annotate_image(
-                                        st.session_state.full_page_img_bytes,
-                                        boxes
-                                    )
-                                    st.session_state.annotated_img = annotated
-                                    st.rerun()
-                                else:
-                                    st.warning("未能获取错题位置，请重试")
-                            except Exception as e:
-                                st.error(f"标注失败：{e}")
-
-                    if st.session_state.get("annotated_img"):
-                        st.image(st.session_state.annotated_img,
-                                 caption="红色圆圈标注错题区域",
-                                 use_container_width=True)
-                        st.download_button(
-                            "⬇️ 下载标注图片",
-                            data=st.session_state.annotated_img,
-                            file_name="错题标注.png",
-                            mime="image/png"
-                        )
 
         # 整页模式下不显示单题输入框
         st.stop()
