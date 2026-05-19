@@ -16,7 +16,17 @@ if not st.session_state.get("logged_in"):
 
 
 load_dotenv()
-MODEL = os.getenv("DASHSCOPE_MODEL", "qwen-max")
+
+# 可供切换的模型列表（DashScope 兼容接口）
+AVAILABLE_MODELS = {
+    "qwen-max（通义千问·当前默认）": "qwen-max",
+    "qwen-plus（通义千问·快速便宜）": "qwen-plus",
+    "deepseek-r1（DeepSeek·链式推理）": "deepseek-r1",
+    "deepseek-v3（DeepSeek·综合能力）": "deepseek-v3",
+    "qwen2.5-math-72b（通义数学专项）": "qwen2.5-math-72b-instruct",
+}
+
+DEFAULT_MODEL = os.getenv("DASHSCOPE_MODEL", "qwen-max")
 
 # ── session_state 初始化 ──────────────────────────────
 for _k, _v in {
@@ -44,62 +54,51 @@ for _k, _v in {
 DRILL_THRESHOLD = 3
 
 SYSTEM_PROMPT = """
-你是数学错因分析系统，适用于小学、初中、高中各年级，支持选择题、填空题、判断题、解析题、应用题、操作题、画图题等所有题型。你必须严格输出合法JSON，不要输出任何额外文本。
+你是通用学科错因分析系统，适用于小学、初中、高中各年级，覆盖数学、语文、英语、物理、化学、历史、政治等所有学科，支持选择题、填空题、判断题、解析题、应用题、阅读理解、写作、翻译等所有题型。你必须严格输出合法JSON，不要输出任何额外文本。
 
 【必须按以下步骤执行，不得跳过】
 
-第一步：独立解题（不看学生答案）
-- 选择题：自己逐步推导，得出正确选项是哪个（A/B/C/D）
-- 填空/计算题：自己完整计算，得出正确答案
-- 判断题：自己判断命题真假
-- 应用题：自己建模求解
+第一步：独立作答（不看学生答案，先自己得出正确答案）
+- 选择题：推导后确定正确选项
+- 填空/计算/翻译题：完整作答得出标准答案
+- 判断题：判断命题真假
+- 阅读理解/简答题：给出要点
+- 写作类：判断学生表达是否符合要求
 
 第二步：比对
-- 将学生答案与你在第一步得出的正确答案逐一比较
-- 完全一致 → "答案是否有误": false
-- 有任何不同 → "答案是否有误": true
+- 将学生答案与第一步的正确答案比较
+- 完全正确 → "答案是否有误": false
+- 有错误或明显不足 → "答案是否有误": true
 
-第三步：输出JSON（不含第一、二步的推理过程）
+第三步：输出JSON（不含推理过程）
 
-错因标签（答案正确时必须为[]）：
-A1 数字抄写错误 / A2 计算过程错误 / A3 基础技能薄弱
-B1 关键概念识别错误 / B2 运算类型误判 / B3 变式迁移失败
-C1 综合结构理解困难 / C2 畏难情绪放弃 / C3 抽象关系建模能力不足
+错因标签体系（适用所有学科，答案正确时必须为[]）：
+A1 抄写/转录错误 / A2 解题过程错误 / A3 基础知识薄弱
+B1 关键概念识别错误 / B2 解题方法误判 / B3 知识迁移失败
+C1 综合理解困难 / C2 畏难情绪放弃 / C3 抽象思维能力不足
 
 输出格式：
 {
   "答案是否有误": true或false,
-  "题型判断": "一句话",
+  "题型判断": "学科+题型一句话",
   "错因标签": [],
   "判断理由": [],
   "建议干预策略": [],
-  "温和反馈": "120~200字"
+  "温和反馈": "针对该学科该题型给学生的引导（120~200字）"
 }
 
 严格规定：答案正确时"答案是否有误"=false，后四个数组全部为[]，温和反馈给予鼓励。
-
-【示范案例】
-案例1（选择题·答案正确）：
-题目：若x=3是方程x²-3mx+6m=0的一个根，则m的值为（ ）A.1 B.2 C.3 D.4
-学生答案：C
-→ 我的推导：代入x=3得9-9m+6m=0，解得m=3，选C。学生选C，一致。
-输出：{"答案是否有误":false,"题型判断":"一元二次方程代入验根","错因标签":[],"判断理由":[],"建议干预策略":[],"温和反馈":"太棒了！你正确运用了代入法验根，计算准确，继续保持！"}
-
-案例2（选择题·答案错误）：
-题目：sin64°与cos26°之间的关系是（ ）A.sin64°<cos26° B.sin64°=cos26° C.sin64°>cos26° D.sin64°=-cos26°
-学生答案：A
-→ 我的推导：sin64°=sin64°，cos26°=cos(90°-64°)=sin64°，所以sin64°=cos26°，选B。学生选A，不一致。
-输出：{"答案是否有误":true,"题型判断":"三角函数互余关系","错因标签":["B1"],"判断理由":["未掌握sin与cos的互余关系：sinα=cos(90°-α)"],"建议干预策略":["专项练习sinα=cos(90°-α)的互化"],"温和反馈":"这道题考查的是互余角的三角函数关系……"}
 """.strip()
 
 FULL_PAGE_OCR_PROMPT = (
-    "请仔细识别这张试卷图片中的所有题目，包括选择题、填空题、判断题、解析题、应用题、操作题等各种题型。\n"
-    "对每道题提取：题号、完整题目内容（选择题须包含所有选项A/B/C/D）、学生的作答内容。\n"
-    "数学符号和公式用LaTeX格式并用$...$包裹，例如：$x^2$、$\\sqrt{2}$、$\\frac{1}{2}$、$\\pm2$。\n"
+    "请仔细识别这张试卷图片中的所有题目（适用于数学、语文、英语、物理、化学等各学科）。\n"
+    "对每道题提取：题号、题型、完整题目内容（选择题须包含所有选项）、学生的作答内容。\n"
+    "数学/物理/化学公式用LaTeX格式并用$...$包裹，如$x^2$、$\\sqrt{2}$、$\\frac{1}{2}$。\n"
+    "语文/英语题目保持原文，不要修改。\n"
     "严格输出JSON数组，包含所有题目，不得遗漏：\n"
     "[\n"
     "  {\"题号\": \"1\", \"题型\": \"选择题\", \"题目\": \"完整题目（含选项）...\", \"学生答案\": \"学生所选或所写的答案...\"},\n"
-    "  {\"题号\": \"2\", \"题型\": \"填空题\", \"题目\": \"...\", \"学生答案\": \"...\"}\n"
+    "  {\"题号\": \"2\", \"题型\": \"阅读理解\", \"题目\": \"...\", \"学生答案\": \"...\"}\n"
     "]\n"
     "只输出JSON，不要输出其他任何文字。"
 )
@@ -197,6 +196,25 @@ def annotate_image(img_bytes: bytes, boxes: list) -> bytes:
 icon_title("assets/icons/错因分析.svg", "错因分析")
 st.markdown("上传题目与学生解题步骤，AI识别错因并温和引导。")
 
+# ── 科目 & 模型选择 ───────────────────────────────────
+col_subj, col_model = st.columns([1, 2])
+with col_subj:
+    SUBJECT = st.selectbox(
+        "📚 学科",
+        ["数学", "语文", "英语", "物理", "化学", "历史", "政治", "生物", "地理", "其他"],
+        key="subject_select"
+    )
+with col_model:
+    model_label = st.selectbox(
+        "🤖 分析模型（可切换测试）",
+        list(AVAILABLE_MODELS.keys()),
+        key="model_select",
+        help="切换不同模型对比批改准确率"
+    )
+MODEL = AVAILABLE_MODELS[model_label]
+
+st.divider()
+
 # ── 图片上传区域 ──────────────────────────────────────
 st.markdown("**📷 拍照识题（可选）**")
 
@@ -285,7 +303,7 @@ if uploaded_img is not None:
                 all_results = []
                 progress = st.progress(0, text="分析中…")
                 for i, prob in enumerate(problems):
-                    user_prompt = f"题目：\n{prob.get('题目', '')}\n\n学生解题步骤：\n{prob.get('学生答案', '')}"
+                    user_prompt = f"学科：{SUBJECT}\n\n题目：\n{prob.get('题目', '')}\n\n学生作答：\n{prob.get('学生答案', '')}"
                     try:
                         result_raw = chat(model=MODEL, system=SYSTEM_PROMPT, user=user_prompt, temperature=0.2)
                         try:
@@ -438,7 +456,7 @@ if st.button("开始分析", type="primary"):
     if not question.strip() or not student_answer.strip():
         st.warning("请填写完整信息")
     else:
-        user_prompt = f"题目：\n{question.strip()}\n\n学生解题步骤：\n{student_answer.strip()}"
+        user_prompt = f"学科：{SUBJECT}\n\n题目：\n{question.strip()}\n\n学生作答：\n{student_answer.strip()}"
         with st.spinner("AI正在分析中..."):
             try:
                 result_raw = chat(model=MODEL, system=SYSTEM_PROMPT, user=user_prompt, temperature=0.2)
@@ -537,8 +555,8 @@ if st.session_state.main_error != "UNKNOWN" and st.session_state.error_count >= 
             grade_hint = "初中"
         else:
             grade_hint = "小学中高年级"
-        drill_system = "你是数学专项训练题生成器。严格输出JSON：{\"训练题\":[{\"题目\":\"\",\"提示\":\"\",\"提醒\":\"\"}]}"
-        drill_user = f"错因标签：{st.session_state.main_error}。生成5道由浅入深的{grade_hint}数学题。"
+        drill_system = f"你是{SUBJECT}专项训练题生成器。严格输出JSON：{{\"训练题\":[{{\"题目\":\"\",\"提示\":\"\",\"提醒\":\"\"}}]}}"
+        drill_user = f"学科：{SUBJECT}。错因标签：{st.session_state.main_error}。生成5道由浅入深的{grade_hint}{SUBJECT}练习题。"
         try:
             with st.spinner("正在生成专项训练题..."):
                 drill_raw = chat(model=MODEL, system=drill_system, user=drill_user, temperature=0.4)
