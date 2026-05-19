@@ -6,7 +6,11 @@ import streamlit as st
 from PIL import Image, ImageDraw
 from dotenv import load_dotenv
 from llm_client import chat, chat_with_image
-from db import save_record, count_same_error, upsert_alert
+from db import save_record, count_same_error, upsert_alert, search_question_bank, init_question_bank
+try:
+    init_question_bank()
+except Exception:
+    pass
 from ui import icon_title
 
 # 登录守卫：未登录跳回主页
@@ -33,7 +37,8 @@ ANALYSIS_MODELS = {
     "DeepSeek-V4-Pro（最强·深度思考）": "deepseek-v4-pro",
     "DeepSeek-V4-Flash（快速·低价）": "deepseek-v4-flash",
     "DeepSeek-R1（链式推理）": "deepseek-reasoner",
-    "Doubao-1.5-Pro-256k（豆包·旗舰）": "doubao-1-5-pro-256k-250115",
+    "Doubao-Seed-2.0-Pro（豆包·最新旗舰）": "doubao-seed-2.0-pro",
+    "Doubao-1.5-Pro-256k（豆包·长文本）": "doubao-1-5-pro-256k-250115",
     "GLM-4-Flash（智谱·快速免费）": "glm-4-flash",
 }
 
@@ -117,6 +122,23 @@ COMBINED_PROMPT = """你是通用学科错因分析系统，请完成两步工�
 
 错因标签：A1抄写/A2过程错/A3基础薄弱/B1概念错/B2方法误判/B3迁移失败/C1综合困难/C2畏难/C3抽象不足
 答案正确时：答案是否有误=false，错因标签/判断理由/建议干预策略均为[]"""
+
+
+def build_user_prompt(subject: str, question: str, student_answer: str) -> tuple[str, bool]:
+    """
+    构造分析用的 user_prompt。
+    如果题库命中，把正确答案注入提示词，返回 (prompt, hit_from_bank)。
+    """
+    bank = search_question_bank(question, subject=subject)
+    if bank:
+        ref = (
+            f"\n\n【📚 题库参考答案（相似度 {bank['similarity']:.0%}，来源：{bank['source'] or '题库'}）】\n"
+            f"{bank['correct_answer']}\n"
+            f"请以此为标准答案判断学生作答是否正确，不要自行推导答案。"
+        )
+        prompt = f"学科：{subject}\n\n题目：\n{question}\n\n学生作答：\n{student_answer}{ref}"
+        return prompt, True
+    return f"学科：{subject}\n\n题目：\n{question}\n\n学生作答：\n{student_answer}", False
 
 
 def safe_json_loads(s: str):
@@ -554,7 +576,9 @@ if st.button("开始分析", type="primary"):
     if not question.strip() or not student_answer.strip():
         st.warning("请填写完整信息")
     else:
-        user_prompt = f"学科：{SUBJECT}\n\n题目：\n{question.strip()}\n\n学生作答：\n{student_answer.strip()}"
+        user_prompt, hit = build_user_prompt(SUBJECT, question.strip(), student_answer.strip())
+        if hit:
+            st.info("📚 已命中题库，使用题库答案作为评判标准")
         with st.spinner("AI正在分析中..."):
             try:
                 result_raw = chat(model=MODEL, system=TEXT_SYSTEM_PROMPT, user=user_prompt, temperature=0.2)

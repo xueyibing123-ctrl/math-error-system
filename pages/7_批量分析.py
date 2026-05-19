@@ -7,7 +7,11 @@ import plotly.express as px
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 from llm_client import chat, chat_with_image
-from db import save_record, count_same_error, upsert_alert
+from db import save_record, count_same_error, upsert_alert, search_question_bank, init_question_bank
+try:
+    init_question_bank()
+except Exception:
+    pass
 from ui import icon_title, icon_text
 
 load_dotenv()
@@ -33,7 +37,8 @@ AVAILABLE_MODELS = {
     "DeepSeek-V4-Pro（最强·深度思考）": "deepseek-v4-pro",
     "DeepSeek-V4-Flash（快速·低价）": "deepseek-v4-flash",
     "DeepSeek-R1（链式推理）": "deepseek-reasoner",
-    "Doubao-1.5-Pro-256k（豆包·旗舰）": "doubao-1-5-pro-256k-250115",
+    "Doubao-Seed-2.0-Pro（豆包·最新旗舰）": "doubao-seed-2.0-pro",
+    "Doubao-1.5-Pro-256k（豆包·长文本）": "doubao-1-5-pro-256k-250115",
     "GLM-4-Flash（智谱·快速免费）": "glm-4-flash",
 }
 
@@ -100,8 +105,14 @@ def safe_json_loads(s: str):
 
 
 def analyze_one(idx, question, steps, model, subject, student_id):
-    """单题分析，用于并行调用。"""
-    user_prompt = f"学科：{subject}\n\n题目：\n{question}\n\n学生作答：\n{steps}"
+    """单题分析，用于并行调用。优先使用题库答案。"""
+    bank = search_question_bank(question, subject=subject)
+    if bank:
+        ref = (f"\n\n【📚 题库参考答案（来源：{bank['source'] or '题库'}）】\n{bank['correct_answer']}\n"
+               f"请以此为标准答案判断学生作答，不要自行推导答案。")
+        user_prompt = f"学科：{subject}\n\n题目：\n{question}\n\n学生作答：\n{steps}{ref}"
+    else:
+        user_prompt = f"学科：{subject}\n\n题目：\n{question}\n\n学生作答：\n{steps}"
     try:
         result_raw = chat(model=model, system=SYSTEM_PROMPT, user=user_prompt, temperature=0.2)
         try:

@@ -283,3 +283,123 @@ def get_student_trend(student_id, days=30):
 
 def init_users_table():
     pass
+
+
+# ═══════════════════════════════════════════════════════
+# 题库管理
+# ═══════════════════════════════════════════════════════
+
+def init_question_bank():
+    """创建题库表（首次调用时执行）。"""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS question_bank (
+            id SERIAL PRIMARY KEY,
+            subject VARCHAR(50) DEFAULT '数学',
+            grade VARCHAR(50) DEFAULT '',
+            source VARCHAR(200) DEFAULT '',
+            question_text TEXT NOT NULL,
+            correct_answer TEXT NOT NULL,
+            uploaded_by VARCHAR(100) DEFAULT '',
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def add_question(subject, grade, source, question_text, correct_answer, uploaded_by=""):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO question_bank (subject, grade, source, question_text, correct_answer, uploaded_by, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+    """, (subject, grade, source, question_text, correct_answer, uploaded_by, datetime.now()))
+    row = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return row["id"] if row else None
+
+
+def search_question_bank(question_text: str, subject: str = None, threshold: float = 0.55):
+    """
+    在题库中检索最相似的题目。
+    返回 {'question_text', 'correct_answer', 'source', 'similarity'} 或 None。
+    """
+    from difflib import SequenceMatcher
+    conn = get_conn()
+    cur = conn.cursor()
+    if subject:
+        cur.execute(
+            "SELECT id, question_text, correct_answer, source FROM question_bank WHERE subject=%s",
+            (subject,)
+        )
+    else:
+        cur.execute("SELECT id, question_text, correct_answer, source FROM question_bank")
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    if not rows:
+        return None
+    # 对题目文字做简单预处理：去除空白
+    q_norm = question_text.replace(" ", "").replace("\n", "")
+    best, best_score = None, 0.0
+    for row in rows:
+        db_norm = row["question_text"].replace(" ", "").replace("\n", "")
+        score = SequenceMatcher(None, q_norm, db_norm).ratio()
+        if score > best_score:
+            best_score = score
+            best = row
+    if best_score >= threshold:
+        return {
+            "question_text": best["question_text"],
+            "correct_answer": best["correct_answer"],
+            "source": best["source"],
+            "similarity": round(best_score, 3),
+        }
+    return None
+
+
+def get_all_questions(subject=None, keyword=None, limit=200):
+    conn = get_conn()
+    cur = conn.cursor()
+    sql = "SELECT id, subject, grade, source, question_text, correct_answer, uploaded_by, created_at FROM question_bank WHERE 1=1"
+    params = []
+    if subject:
+        sql += " AND subject=%s"
+        params.append(subject)
+    if keyword:
+        sql += " AND (question_text ILIKE %s OR correct_answer ILIKE %s OR source ILIKE %s)"
+        params.extend([f"%{keyword}%", f"%{keyword}%", f"%{keyword}%"])
+    sql += " ORDER BY created_at DESC LIMIT %s"
+    params.append(limit)
+    cur.execute(sql, params)
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def delete_question(question_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM question_bank WHERE id=%s", (question_id,))
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
+def count_questions(subject=None):
+    conn = get_conn()
+    cur = conn.cursor()
+    if subject:
+        cur.execute("SELECT COUNT(*) as cnt FROM question_bank WHERE subject=%s", (subject,))
+    else:
+        cur.execute("SELECT COUNT(*) as cnt FROM question_bank")
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row["cnt"] if row else 0
