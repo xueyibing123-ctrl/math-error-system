@@ -22,8 +22,10 @@ load_dotenv()
 OCR_MODELS = {
     "qwen-vl-plus（通义视觉·默认）": "qwen-vl-plus",
     "qwen-vl-max（通义视觉·高精度）": "qwen-vl-max",
-    "glm-4v-flash（智谱视觉·快速）": "glm-4v-flash",
-    "glm-4v-plus（智谱视觉·高精度）": "glm-4v-plus",
+    "GLM-OCR（智谱·专业OCR）": "glm-ocr",
+    "GLM-5V-Turbo（智谱视觉·最新）": "glm-5v-turbo",
+    "GLM-4.6V（智谱视觉·通用）": "glm-4.6v",
+    "GLM-4.1V-Thinking（智谱视觉·深度思考）": "glm-4.1v-thinking",
 }
 
 # 分析模型（负责错因判断、错误分析）
@@ -31,13 +33,13 @@ AVAILABLE_MODELS = {
     "qwen-max（通义千问·默认）": "qwen-max",
     "qwen-plus（通义千问·快速便宜）": "qwen-plus",
     "qwen2.5-math-72b（通义数学专项）": "qwen2.5-math-72b-instruct",
-    "deepseek-v4（DeepSeek·最新版）": "deepseek-chat",
-    "deepseek-r1（DeepSeek·链式推理）": "deepseek-reasoner",
-    "deepseek-v3（DeepSeek·上一代）": "deepseek-v3",
-    "glm-4-plus（智谱·通用）": "glm-4-plus",
-    "glm-4-flash（智谱·快速免费）": "glm-4-flash",
-    "doubao-pro-32k（豆包·通用）": "doubao-pro-32k",
-    "doubao-1.5-pro（豆包·最新）": "doubao-1.5-pro-32k",
+    "DeepSeek-V3.2（最新·均衡）": "deepseek-chat",
+    "DeepSeek-R1（链式推理）": "deepseek-reasoner",
+    "Doubao-Seed-2.0-pro（豆包·旗舰）": "doubao-seed-2.0-pro",
+    "Doubao-Seed-2.0-lite（豆包·轻量）": "doubao-seed-2.0-lite",
+    "Doubao-Seed-2.0-mini（豆包·迷你）": "doubao-seed-2.0-mini",
+    "GLM-4.7（智谱·多步推理）": "glm-4.7",
+    "GLM-4-Flash（智谱·快速免费）": "glm-4-flash",
 }
 
 DEFAULT_MODEL = os.getenv("DASHSCOPE_MODEL", "qwen-max")

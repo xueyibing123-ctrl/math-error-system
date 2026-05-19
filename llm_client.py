@@ -31,7 +31,8 @@ _MODEL_PROVIDER = {
     "deepseek": "deepseek",
     "glm": "zhipu",
     "doubao": "volc",
-    "ep-": "volc",   # 火山引擎 endpoint ID 格式
+    "ep-": "volc",        # 火山引擎 endpoint ID 格式
+    "doubao-seed": "volc", # 豆包 Seed 系列
 }
 
 
