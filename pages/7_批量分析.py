@@ -29,15 +29,11 @@ OCR_MODELS = {
 }
 
 AVAILABLE_MODELS = {
-    "qwen-max（通义千问·默认）": "qwen-max",
-    "qwen-plus（通义千问·快速便宜）": "qwen-plus",
-    "qwen2.5-math-72b（通义数学专项）": "qwen2.5-math-72b-instruct",
+    "qwen-max（通义千问·推荐）": "qwen-max",
     "DeepSeek-V4-Pro（最强·深度思考）": "deepseek-v4-pro",
     "DeepSeek-V4-Flash（快速·低价）": "deepseek-v4-flash",
-    "DeepSeek-V3.2（均衡）": "deepseek-chat",
     "DeepSeek-R1（链式推理）": "deepseek-reasoner",
     "Doubao-1.5-Pro-256k（豆包·旗舰）": "doubao-1-5-pro-256k-250115",
-    "GLM-4.7（智谱·多步推理）": "glm-4.7",
     "GLM-4-Flash（智谱·快速免费）": "glm-4-flash",
 }
 

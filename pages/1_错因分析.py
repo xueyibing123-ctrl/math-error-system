@@ -30,14 +30,10 @@ VISION_MODELS = {
 # 分析模型（支持文本输入，用于错因判断）
 ANALYSIS_MODELS = {
     "qwen-max（通义千问·推荐）": "qwen-max",
-    "qwen-plus（通义千问·快速）": "qwen-plus",
-    "qwen2.5-math-72b（通义数学专项）": "qwen2.5-math-72b-instruct",
     "DeepSeek-V4-Pro（最强·深度思考）": "deepseek-v4-pro",
     "DeepSeek-V4-Flash（快速·低价）": "deepseek-v4-flash",
-    "DeepSeek-V3.2（均衡）": "deepseek-chat",
     "DeepSeek-R1（链式推理）": "deepseek-reasoner",
     "Doubao-1.5-Pro-256k（豆包·旗舰）": "doubao-1-5-pro-256k-250115",
-    "GLM-4.7（智谱·多步推理）": "glm-4.7",
     "GLM-4-Flash（智谱·快速免费）": "glm-4-flash",
 }
 
@@ -191,27 +187,6 @@ def normalize_drill_items(drill_data):
     return norm
 
 
-def annotate_image(img_bytes: bytes, wrong_nums: list, all_results: list) -> bytes:
-    """在图片上用红色方框标注错题区域（简单按题号位置估算）。"""
-    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    draw = ImageDraw.Draw(img)
-    w, h = img.size
-    n = len(all_results)
-    if n == 0:
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        return buf.getvalue()
-    for r in all_results:
-        num = str(r.get("题号", ""))
-        if num in wrong_nums:
-            idx = next((i for i, x in enumerate(all_results) if str(x.get("题号", "")) == num), 0)
-            y_top = int(idx / n * h)
-            y_bot = int((idx + 1) / n * h)
-            pad = 6
-            draw.rectangle([pad, y_top + pad, w - pad, y_bot - pad], outline="red", width=4)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
 
 
 # ── 页面 ─────────────────────────────────────────────
@@ -300,9 +275,6 @@ if page_mode == "📷 拍照整页·单模型（识题+分析一次完成，最�
 
                     st.session_state.full_page_results = results
                     st.session_state.full_page_wrong_nums = wrong_nums
-                    # 生成标注图
-                    if wrong_nums:
-                        st.session_state.annotated_img = annotate_image(img_bytes_raw, wrong_nums, results)
                     st.rerun()
 
                 except Exception as e:
@@ -319,17 +291,9 @@ if page_mode == "📷 拍照整页·单模型（识题+分析一次完成，最�
             "C1": "综合理解困难", "C2": "畏难情绪放弃", "C3": "抽象思维不足",
         }
 
-        # 标注图
-        if st.session_state.get("annotated_img"):
-            st.divider()
-            st.markdown("### 🔴 错题标注试卷")
-            st.image(st.session_state.annotated_img, caption="红色方框 = 错题区域", use_container_width=True)
-            st.download_button("⬇️ 下载标注图片", data=st.session_state.annotated_img,
-                               file_name="错题标注.png", mime="image/png", key="dl_annotated")
-
         st.divider()
         if wrong_nums:
-            st.warning(f"共发现 **{len(wrong_nums)}** 道错题：第 {', '.join(wrong_nums)} 题")
+            st.warning(f"⚠️ 共发现 **{len(wrong_nums)}** 道错题：第 **{', '.join(wrong_nums)}** 题")
         else:
             st.success("未发现明显错误，做得不错！")
 
@@ -483,9 +447,6 @@ elif page_mode == "📷 拍照整页·双模型（OCR模型+分析模型，可�
                     prog.progress(done / len(problems), text=f"已完成 {done}/{len(problems)} 道")
 
             prog.empty()
-            if wrong_nums and st.session_state.get("dual_img_bytes"):
-                st.session_state.annotated_img = annotate_image(
-                    st.session_state["dual_img_bytes"], wrong_nums, all_results)
             st.session_state.full_page_results = all_results
             st.session_state.full_page_wrong_nums = wrong_nums
             st.rerun()
@@ -498,15 +459,9 @@ elif page_mode == "📷 拍照整页·双模型（OCR模型+分析模型，可�
             "B1":"关键概念识别错误","B2":"解题方法误判","B3":"知识迁移失败",
             "C1":"综合理解困难","C2":"畏难情绪放弃","C3":"抽象思维不足",
         }
-        if st.session_state.get("annotated_img"):
-            st.divider()
-            st.markdown("### 🔴 错题标注试卷")
-            st.image(st.session_state.annotated_img, caption="红色方框 = 错题区域", use_container_width=True)
-            st.download_button("⬇️ 下载标注图片", data=st.session_state.annotated_img,
-                               file_name="错题标注.png", mime="image/png", key="dl_annotated2")
         st.divider()
         if wrong_nums:
-            st.warning(f"共发现 **{len(wrong_nums)}** 道错题：第 {', '.join(wrong_nums)} 题")
+            st.warning(f"⚠️ 共发现 **{len(wrong_nums)}** 道错题：第 **{', '.join(wrong_nums)}** 题")
         else:
             st.success("未发现明显错误，做得不错！")
         st.markdown("### 📋 逐题分析报告")
