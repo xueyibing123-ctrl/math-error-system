@@ -81,23 +81,32 @@ with st.sidebar:
     else:
         icon_text("assets/icons/log-in.svg", "请先登录", size=18)
     st.markdown("---")
-    icon_text("assets/icons/book.svg", "小学数学错因分析系统 v2.0", size=16)
+    icon_text("assets/icons/book.svg", "数学错因分析系统 v2.0", size=16)
 
 CLASSES = [
+    # 小学
     "一年级1班","一年级2班",
     "二年级1班","二年级2班",
     "三年级1班","三年级2班","三年级3班","三年级4班",
     "四年级1班","四年级2班","四年级3班","四年级4班",
     "五年级1班","五年级2班","五年级3班","五年级4班",
     "六年级1班","六年级2班","六年级3班","六年级4班",
+    # 初中
+    "七年级1班","七年级2班","七年级3班","七年级4班",
+    "八年级1班","八年级2班","八年级3班","八年级4班",
+    "九年级1班","九年级2班","九年级3班","九年级4班",
+    # 高中
+    "高一1班","高一2班","高一3班","高一4班",
+    "高二1班","高二2班","高二3班","高二4班",
+    "高三1班","高三2班","高三3班","高三4班",
 ]
 
 TEACHER_INVITE_CODE = "teacher2024"
 
 # ── 未登录：登录/注册
 if not st.session_state.logged_in:
-    icon_title("assets/icons/book.svg", "小学数学应用题错因分析系统")
-    st.caption("AI驱动 · 精准诊断 · 因材施教")
+    icon_title("assets/icons/book.svg", "中小学数学错因分析系统")
+    st.caption("AI驱动 · 精准诊断 · 因材施教 · 适用小学/初中/高中")
     st.markdown("<div style='margin-bottom: 1.5rem;'></div>", unsafe_allow_html=True)
 
     tab1, tab2 = st.tabs(["登录", "注册"])
