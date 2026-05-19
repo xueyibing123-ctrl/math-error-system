@@ -92,6 +92,20 @@ def chat_with_image(image_b64: str, mime_type: str, prompt: str, model="qwen-vl-
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
     model_lower = model.lower()
+    is_zhipu = model_lower.startswith("glm")
+
+    # 智谱 GLM 系列只接受 PNG，JPEG 会返回 400；自动转换
+    if is_zhipu and mime_type in ("image/jpeg", "image/jpg"):
+        try:
+            from PIL import Image
+            import io, base64 as _b64
+            img = Image.open(io.BytesIO(_b64.b64decode(image_b64)))
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            image_b64 = _b64.b64encode(buf.getvalue()).decode()
+            mime_type = "image/png"
+        except Exception:
+            pass  # 转换失败就原样发送，让 API 报错给用户看
 
     # GLM-OCR 使用智谱专用的 OCR 接口格式
     if model_lower == "glm-ocr":
