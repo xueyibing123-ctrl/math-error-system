@@ -17,19 +17,18 @@ if not st.session_state.get("logged_in"):
 
 load_dotenv()
 
-# 可供切换的模型列表（DashScope 兼容接口）
-# OCR 视觉识别模型（负责从图片提取题目文字）
-OCR_MODELS = {
-    "qwen-vl-plus（通义视觉·默认）": "qwen-vl-plus",
+# 视觉分析模型（整页识别+分析一次完成，必须是视觉模型）
+VISION_MODELS = {
+    "qwen-vl-plus（通义视觉·快速）": "qwen-vl-plus",
     "qwen-vl-max（通义视觉·高精度）": "qwen-vl-max",
     "GLM-4.6V（智谱视觉·通用）": "glm-4.6v",
     "GLM-4.1V-Thinking（智谱视觉·深度思考）": "glm-4.1v-thinking",
 }
 
-# 分析模型（负责错因判断、错误分析）
-AVAILABLE_MODELS = {
+# 纯文本分析模型（单题手动输入时使用）
+TEXT_MODELS = {
     "qwen-max（通义千问·默认）": "qwen-max",
-    "qwen-plus（通义千问·快速便宜）": "qwen-plus",
+    "qwen-plus（通义千问·快速）": "qwen-plus",
     "qwen2.5-math-72b（通义数学专项）": "qwen2.5-math-72b-instruct",
     "DeepSeek-V4-Pro（最强·深度思考）": "deepseek-v4-pro",
     "DeepSeek-V4-Flash（快速·低价）": "deepseek-v4-flash",
@@ -54,11 +53,8 @@ for _k, _v in {
     "drill_mastery": {},
     "ocr_text": "",
     "ocr_steps": "",
-    "full_page_problems": None,
     "full_page_results": None,
     "full_page_wrong_nums": [],
-    "full_page_img_b64": "",
-    "full_page_mime": "",
     "full_page_img_bytes": None,
     "annotated_img": None,
 }.items():
@@ -67,55 +63,51 @@ for _k, _v in {
 
 DRILL_THRESHOLD = 3
 
-SYSTEM_PROMPT = """
-你是通用学科错因分析系统，适用于小学、初中、高中各年级，覆盖数学、语文、英语、物理、化学、历史、政治等所有学科，支持选择题、填空题、判断题、解析题、应用题、阅读理解、写作、翻译等所有题型。你必须严格输出合法JSON，不要输出任何额外文本。
+TEXT_SYSTEM_PROMPT = """
+你是通用学科错因分析系统，适用于小学、初中、高中各年级，覆盖数学、语文、英语、物理、化学、历史、政治等所有学科。你必须严格输出合法JSON，不要输出任何额外文本。
 
-【必须按以下步骤执行，不得跳过】
-
+【必须按以下步骤执行】
 第一步：独立作答（不看学生答案，先自己得出正确答案）
-- 选择题：推导后确定正确选项
-- 填空/计算/翻译题：完整作答得出标准答案
-- 判断题：判断命题真假
-- 阅读理解/简答题：给出要点
-- 写作类：判断学生表达是否符合要求
+第二步：比对（完全正确→"答案是否有误":false，有误→true）
+第三步：输出JSON
 
-第二步：比对
-- 将学生答案与第一步的正确答案比较
-- 完全正确 → "答案是否有误": false
-- 有错误或明显不足 → "答案是否有误": true
-
-第三步：输出JSON（不含推理过程）
-
-错因标签体系（适用所有学科，答案正确时必须为[]）：
-A1 抄写/转录错误 / A2 解题过程错误 / A3 基础知识薄弱
-B1 关键概念识别错误 / B2 解题方法误判 / B3 知识迁移失败
-C1 综合理解困难 / C2 畏难情绪放弃 / C3 抽象思维能力不足
+错因标签：A1抄写错误/A2过程错误/A3基础薄弱/B1概念错误/B2方法误判/B3迁移失败/C1综合困难/C2畏难放弃/C3抽象不足
 
 输出格式：
-{
-  "答案是否有误": true或false,
-  "题型判断": "学科+题型一句话",
-  "错因标签": [],
-  "判断理由": [],
-  "建议干预策略": [],
-  "温和反馈": "针对该学科该题型给学生的引导（120~200字）"
-}
+{"答案是否有误":true或false,"题型判断":"...","错因标签":[],"判断理由":[],"建议干预策略":[],"温和反馈":"120~200字"}
 
-严格规定：答案正确时"答案是否有误"=false，后四个数组全部为[]，温和反馈给予鼓励。
+答案正确时：后四个数组全为[]，温和反馈给予鼓励。
 """.strip()
 
-FULL_PAGE_OCR_PROMPT = (
-    "请仔细识别这张试卷图片中的所有题目（适用于数学、语文、英语、物理、化学等各学科）。\n"
-    "对每道题提取：题号、题型、完整题目内容（选择题须包含所有选项）、学生的作答内容。\n"
-    "数学/物理/化学公式用LaTeX格式并用$...$包裹，如$x^2$、$\\sqrt{2}$、$\\frac{1}{2}$。\n"
-    "语文/英语题目保持原文，不要修改。\n"
-    "严格输出JSON数组，包含所有题目，不得遗漏：\n"
-    "[\n"
-    "  {\"题号\": \"1\", \"题型\": \"选择题\", \"题目\": \"完整题目（含选项）...\", \"学生答案\": \"学生所选或所写的答案...\"},\n"
-    "  {\"题号\": \"2\", \"题型\": \"阅读理解\", \"题目\": \"...\", \"学生答案\": \"...\"}\n"
-    "]\n"
-    "只输出JSON，不要输出其他任何文字。"
-)
+# 整页识别+分析一次完成的联合Prompt
+COMBINED_PROMPT = """你是通用学科错因分析系统，请完成两步工作：
+
+第一步：识别图片中的所有题目（数学/语文/英语/物理/化学等均适用）
+第二步：对每道题独立判断学生答案是否正确，给出完整错因分析
+
+要求：
+- 先自己推导出正确答案，再与学生答案比对
+- 数学/物理公式用$...$包裹LaTeX，如$x^2$、$\\frac{1}{2}$
+- 语文/英语保持原文
+
+严格输出JSON数组（只含JSON，不要其他文字）：
+[
+  {
+    "题号": "1",
+    "题型": "选择题",
+    "题目": "完整题目内容含选项",
+    "学生答案": "学生所写答案",
+    "答案是否有误": true,
+    "题型判断": "学科+题型描述",
+    "错因标签": ["A2"],
+    "判断理由": ["理由说明"],
+    "建议干预策略": ["策略"],
+    "温和反馈": "给学生的引导（50字以内）"
+  }
+]
+
+错因标签：A1抄写/A2过程错/A3基础薄弱/B1概念错/B2方法误判/B3迁移失败/C1综合困难/C2畏难/C3抽象不足
+答案正确时：答案是否有误=false，错因标签/判断理由/建议干预策略均为[]"""
 
 
 def safe_json_loads(s: str):
@@ -151,6 +143,18 @@ def safe_json_loads(s: str):
     raise ValueError("JSON parse failed")
 
 
+def compress_image(img_bytes: bytes, max_side: int = 1600) -> tuple[bytes, str]:
+    """压缩图片，减少上传体积，返回(压缩后bytes, mime_type)。"""
+    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    w, h = img.size
+    if max(w, h) > max_side:
+        ratio = max_side / max(w, h)
+        img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=82, optimize=True)
+    return buf.getvalue(), "image/jpeg"
+
+
 def normalize_drill_items(drill_data):
     if isinstance(drill_data, dict):
         items = drill_data.get("训练题") or drill_data.get("items") or drill_data.get("questions")
@@ -174,33 +178,24 @@ def normalize_drill_items(drill_data):
     return norm
 
 
-def get_wrong_positions(img_b64: str, mime_type: str, wrong_nums: list) -> list:
-    """Ask the vision model to locate wrong answers on the image; returns list of bounding boxes."""
-    nums_str = "、".join(f"第{n}题" for n in wrong_nums)
-    prompt = (
-        f"图片中{nums_str}的答案有误。"
-        "请找出每道错题的答案书写区域在图片中的位置，用边界框标出。"
-        "坐标系：图片左上角为(0,0)，右下角为(1000,1000)。"
-        "严格输出JSON数组（只含错题）："
-        "[{\"题号\": \"1\", \"x1\": 50, \"y1\": 100, \"x2\": 400, \"y2\": 200}, ...]"
-        "只输出JSON，不要输出其他文字。"
-    )
-    response = chat_with_image(image_b64=img_b64, mime_type=mime_type, prompt=prompt)
-    return safe_json_loads(response)
-
-
-def annotate_image(img_bytes: bytes, boxes: list) -> bytes:
-    """Draw red ellipses on the image at the given bounding box locations."""
+def annotate_image(img_bytes: bytes, wrong_nums: list, all_results: list) -> bytes:
+    """在图片上用红色方框标注错题区域（简单按题号位置估算）。"""
     img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     draw = ImageDraw.Draw(img)
     w, h = img.size
-    for box in boxes:
-        x1 = int(box.get("x1", 0) / 1000 * w)
-        y1 = int(box.get("y1", 0) / 1000 * h)
-        x2 = int(box.get("x2", 0) / 1000 * w)
-        y2 = int(box.get("y2", 0) / 1000 * h)
-        pad = 18
-        draw.ellipse([x1 - pad, y1 - pad, x2 + pad, y2 + pad], outline="red", width=5)
+    n = len(all_results)
+    if n == 0:
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+    for r in all_results:
+        num = str(r.get("题号", ""))
+        if num in wrong_nums:
+            idx = next((i for i, x in enumerate(all_results) if str(x.get("题号", "")) == num), 0)
+            y_top = int(idx / n * h)
+            y_bot = int((idx + 1) / n * h)
+            pad = 6
+            draw.rectangle([pad, y_top + pad, w - pad, y_bot - pad], outline="red", width=4)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
@@ -210,68 +205,194 @@ def annotate_image(img_bytes: bytes, boxes: list) -> bytes:
 icon_title("assets/icons/错因分析.svg", "错因分析")
 st.markdown("上传题目与学生解题步骤，AI识别错因并温和引导。")
 
-# ── 科目 & 模型选择 ───────────────────────────────────
-col_subj, col_ocr, col_model = st.columns([1, 1.5, 1.5])
+# ── 学科 & 模型选择 ───────────────────────────────────
+col_subj, col_model = st.columns([1, 2])
 with col_subj:
     SUBJECT = st.selectbox(
         "📚 学科",
         ["数学", "语文", "英语", "物理", "化学", "历史", "政治", "生物", "地理", "其他"],
         key="subject_select"
     )
-with col_ocr:
-    ocr_label = st.selectbox(
-        "📷 OCR识题模型",
-        list(OCR_MODELS.keys()),
-        key="ocr_model_select",
-        help="负责从图片中提取题目文字，专业视觉模型更准确"
-    )
 with col_model:
-    model_label = st.selectbox(
-        "🧠 错因分析模型",
-        list(AVAILABLE_MODELS.keys()),
-        key="model_select",
-        help="负责判断对错、分析错因，推理能力强的模型更准"
+    page_mode = st.radio(
+        "识题模式",
+        ["📷 拍照整页识别（快速）", "✏️ 手动输入单题"],
+        horizontal=True,
+        key="page_mode_radio",
     )
 
-OCR_MODEL = OCR_MODELS[ocr_label]
-MODEL = AVAILABLE_MODELS[model_label]
-
-# 显示当前流水线
-st.caption(f"当前方案：**{ocr_label.split('（')[0]}** 识题 → **{model_label.split('（')[0]}** 分析")
 st.divider()
 
-# ── 图片上传区域 ──────────────────────────────────────
-st.markdown("**📷 拍照识题（可选）**")
+# ══════════════════════════════════════════════════════
+# 整页拍照模式（单次API调用，识别+分析一步完成）
+# ══════════════════════════════════════════════════════
+if page_mode == "📷 拍照整页识别（快速）":
 
-page_mode = st.radio(
-    "识题模式",
-    ["单题模式", "整页识别（多道题）"],
-    horizontal=True,
-    key="page_mode",
-    help="单题模式：识别单道题目；整页识别：识别整张试卷所有题目并标注错题"
-)
+    vision_label = st.selectbox(
+        "🤖 视觉分析模型（识题+分析一次完成）",
+        list(VISION_MODELS.keys()),
+        key="vision_model_select",
+        help="视觉模型直接读图、判断对错、给出分析，一次API调用完成全部工作"
+    )
+    VISION_MODEL = VISION_MODELS[vision_label]
+    st.caption(f"模型：**{vision_label.split('（')[0]}** · 学科：**{SUBJECT}** · 一次调用完成识别+分析")
 
-uploaded_img = st.file_uploader(
-    "上传题目图片，AI自动识别转文字" if page_mode == "单题模式" else "上传整页试卷照片，AI识别所有题目",
-    type=["jpg", "jpeg", "png"]
-)
+    uploaded_img = st.file_uploader(
+        "上传整页试卷照片",
+        type=["jpg", "jpeg", "png"],
+        key="full_page_img"
+    )
 
-if uploaded_img is not None:
-    img_bytes_raw = uploaded_img.read()
-    img_b64 = base64.b64encode(img_bytes_raw).decode("utf-8")
-    suffix = uploaded_img.name.split(".")[-1].lower()
-    mime = "image/jpeg" if suffix in ("jpg", "jpeg") else "image/png"
+    if uploaded_img is not None:
+        img_bytes_raw = uploaded_img.read()
+        st.image(img_bytes_raw, use_container_width=True)
 
-    if page_mode == "单题模式":
-        st.image(img_bytes_raw, width=300)
-        if st.button("识别图片内容", key="btn_ocr"):
-            with st.spinner("正在识别图片..."):
+        if st.button("🚀 一键识别并分析所有题目", key="btn_combined", type="primary"):
+            st.session_state.full_page_results = None
+            st.session_state.full_page_wrong_nums = []
+            st.session_state.annotated_img = None
+            st.session_state.full_page_img_bytes = img_bytes_raw
+
+            with st.spinner("正在识别并分析中，请稍候（单次调用，比之前快很多）…"):
                 try:
-                    ocr_text = chat_with_image(
+                    # 压缩图片减少上传时间
+                    compressed, mime = compress_image(img_bytes_raw)
+                    img_b64 = base64.b64encode(compressed).decode("utf-8")
+
+                    combined_prompt = f"学科：{SUBJECT}\n\n" + COMBINED_PROMPT
+                    raw = chat_with_image(
                         image_b64=img_b64,
                         mime_type=mime,
-                        model=OCR_MODEL,
-                        prompt='请识别图片内容，分两部分：1）题目（含选项）2）学生解题步骤或答案。数学符号用$...$包裹LaTeX格式，如$x^2$、$\\sqrt{2}$。严格按JSON输出：{"题目": "...", "步骤": "..."}'
+                        prompt=combined_prompt,
+                        model=VISION_MODEL,
+                        temperature=0.1,
+                    )
+                    results = safe_json_loads(raw)
+                    if not isinstance(results, list) or not results:
+                        st.error("返回结果为空或格式异常，请重试或换一张清晰图片")
+                        st.stop()
+
+                    wrong_nums = []
+                    for r in results:
+                        is_wrong = r.get("答案是否有误", False)
+                        tags = r.get("错因标签", [])
+                        if is_wrong and tags:
+                            wrong_nums.append(str(r.get("题号", "")))
+                            save_record(
+                                st.session_state.get("student_id", "unknown"),
+                                r.get("题目", ""),
+                                r.get("学生答案", ""),
+                                tags[0],
+                                r.get("温和反馈", "")
+                            )
+
+                    st.session_state.full_page_results = results
+                    st.session_state.full_page_wrong_nums = wrong_nums
+                    # 生成标注图
+                    if wrong_nums:
+                        st.session_state.annotated_img = annotate_image(img_bytes_raw, wrong_nums, results)
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"识别失败：{e}")
+
+    # ── 展示分析结果 ──────────────────────────────────
+    if st.session_state.get("full_page_results"):
+        results = st.session_state.full_page_results
+        wrong_nums = st.session_state.get("full_page_wrong_nums", [])
+
+        ERROR_DESC = {
+            "A1": "抄写/转录错误", "A2": "解题过程错误", "A3": "基础知识薄弱",
+            "B1": "关键概念识别错误", "B2": "解题方法误判", "B3": "知识迁移失败",
+            "C1": "综合理解困难", "C2": "畏难情绪放弃", "C3": "抽象思维不足",
+        }
+
+        # 标注图
+        if st.session_state.get("annotated_img"):
+            st.divider()
+            st.markdown("### 🔴 错题标注试卷")
+            st.image(st.session_state.annotated_img, caption="红色方框 = 错题区域", use_container_width=True)
+            st.download_button("⬇️ 下载标注图片", data=st.session_state.annotated_img,
+                               file_name="错题标注.png", mime="image/png", key="dl_annotated")
+
+        st.divider()
+        if wrong_nums:
+            st.warning(f"共发现 **{len(wrong_nums)}** 道错题：第 {', '.join(wrong_nums)} 题")
+        else:
+            st.success("未发现明显错误，做得不错！")
+
+        st.markdown("### 📋 逐题分析报告")
+        for r in results:
+            num = str(r.get("题号", "?"))
+            orig_q = r.get("题目", "")
+            orig_a = r.get("学生答案", "")
+            ques_type = r.get("题型", "")
+            is_wrong = r.get("答案是否有误", False)
+            tags = r.get("错因标签", [])
+
+            if is_wrong:
+                st.markdown(
+                    f"<div style='background:#FFF1F0;border-left:4px solid #FF4D4F;"
+                    f"border-radius:8px;padding:1rem 1.2rem;margin-bottom:1rem;'>"
+                    f"<b style='font-size:1.05rem;color:#CF1322;'>❌ 第 {num} 题"
+                    f"{' · ' + ques_type if ques_type else ''}（有误）</b>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+                with st.container(border=True):
+                    st.markdown("**📝 原题**")
+                    st.markdown(orig_q)
+                    st.markdown("**✏️ 学生答案**")
+                    st.markdown(orig_a)
+                    st.divider()
+                    st.markdown(f"**📌 题型判断**：{r.get('题型判断', '-')}")
+                    st.markdown("**🏷️ 错因标签**")
+                    for tag in tags:
+                        st.error(f"**{tag}** — {ERROR_DESC.get(tag, '')}")
+                    st.markdown("**🔍 判断理由**")
+                    for reason in r.get("判断理由", []):
+                        st.markdown(f"• {reason}")
+                    st.markdown("**💡 建议干预策略**")
+                    for s in r.get("建议干预策略", []):
+                        st.markdown(f"• {s}")
+                    st.markdown("**💬 温和反馈**")
+                    st.info(r.get("温和反馈", ""))
+            else:
+                with st.expander(f"✅ 第 {num} 题{' · ' + ques_type if ques_type else ''}（正确）"):
+                    st.markdown(orig_q)
+                    st.caption(r.get("题型判断", ""))
+                    if r.get("温和反馈"):
+                        st.info(r.get("温和反馈", ""))
+
+    st.stop()
+
+# ══════════════════════════════════════════════════════
+# 手动输入单题模式
+# ══════════════════════════════════════════════════════
+model_label = st.selectbox(
+    "🧠 分析模型",
+    list(TEXT_MODELS.keys()),
+    key="text_model_select",
+)
+MODEL = TEXT_MODELS[model_label]
+
+# 单题图片识别（可选）
+with st.expander("📷 拍照识别单题（可选）"):
+    single_img = st.file_uploader("上传单题图片，AI自动识别转文字",
+                                  type=["jpg", "jpeg", "png"], key="single_img")
+    if single_img:
+        img_bytes_raw = single_img.read()
+        st.image(img_bytes_raw, width=300)
+        vis_label = st.selectbox("识别模型", list(VISION_MODELS.keys()), key="single_ocr_model")
+        if st.button("识别图片内容", key="btn_ocr"):
+            with st.spinner("正在识别..."):
+                try:
+                    compressed, mime = compress_image(img_bytes_raw)
+                    img_b64 = base64.b64encode(compressed).decode("utf-8")
+                    ocr_text = chat_with_image(
+                        image_b64=img_b64, mime_type=mime,
+                        model=VISION_MODELS[vis_label],
+                        prompt='请识别图片内容，分两部分：1）题目（含选项）2）学生解题步骤或答案。数学符号用$...$包裹LaTeX格式。严格按JSON输出：{"题目": "...", "步骤": "..."}'
                     )
                     try:
                         ocr_json = safe_json_loads(ocr_text)
@@ -284,194 +405,6 @@ if uploaded_img is not None:
                 except Exception as e:
                     st.error(f"识别失败：{e}")
 
-    else:
-        # ── 整页识别模式 ──────────────────────────────
-        st.image(img_bytes_raw, use_container_width=True)
-        if st.button("识别整页所有题目", key="btn_full_ocr", type="primary"):
-            # reset previous results
-            st.session_state.full_page_problems = None
-            st.session_state.full_page_results = None
-            st.session_state.full_page_wrong_nums = []
-            st.session_state.annotated_img = None
-            with st.spinner("正在识别整页题目，请稍候…"):
-                try:
-                    ocr_raw = chat_with_image(
-                        image_b64=img_b64,
-                        mime_type=mime,
-                        model=OCR_MODEL,
-                        prompt=FULL_PAGE_OCR_PROMPT
-                    )
-                    problems = safe_json_loads(ocr_raw)
-                    if isinstance(problems, list) and problems:
-                        st.session_state.full_page_problems = problems
-                        st.session_state.full_page_img_b64 = img_b64
-                        st.session_state.full_page_mime = mime
-                        st.session_state.full_page_img_bytes = img_bytes_raw
-                        st.success(f"识别完成，共发现 **{len(problems)}** 道题目")
-                    else:
-                        st.error("识别结果为空或格式异常，请重试或换一张清晰度更高的图片")
-                except Exception as e:
-                    st.error(f"识别失败：{e}")
-
-        # ── 展示识别到的题目列表 ──────────────────────
-        if st.session_state.get("full_page_problems"):
-            problems = st.session_state.full_page_problems
-            st.markdown(f"**已识别 {len(problems)} 道题目：**")
-            for p in problems:
-                with st.expander(f"第 {p.get('题号', '?')} 题"):
-                    st.write(f"**题目：** {p.get('题目', '')}")
-                    st.write(f"**学生答案：** {p.get('学生答案', '')}")
-
-            if st.button("分析所有题目错因", key="btn_full_analyze", type="primary"):
-                st.session_state.full_page_results = None
-                st.session_state.full_page_wrong_nums = []
-                st.session_state.annotated_img = None
-                wrong_nums = []
-                all_results = []
-                progress = st.progress(0, text="分析中…")
-                for i, prob in enumerate(problems):
-                    user_prompt = f"学科：{SUBJECT}\n\n题目：\n{prob.get('题目', '')}\n\n学生作答：\n{prob.get('学生答案', '')}"
-                    try:
-                        result_raw = chat(model=MODEL, system=SYSTEM_PROMPT, user=user_prompt, temperature=0.2)
-                        try:
-                            data = safe_json_loads(result_raw)
-                        except Exception:
-                            result_raw = chat(model=MODEL, system=SYSTEM_PROMPT, user=user_prompt, temperature=0.0)
-                            data = safe_json_loads(result_raw)
-                        all_results.append({
-                            "题号": prob.get("题号", str(i + 1)),
-                            "题型": prob.get("题型", ""),
-                            "题目": prob.get("题目", ""),
-                            "学生答案": prob.get("学生答案", ""),
-                            "data": data,
-                        })
-                        is_wrong = data.get("答案是否有误", False)
-                        tags = data.get("错因标签", [])
-                        if is_wrong and tags:
-                            wrong_nums.append(str(prob.get("题号", str(i + 1))))
-                            save_record(
-                                st.session_state.get("student_id", "unknown"),
-                                prob.get("题目", ""),
-                                prob.get("学生答案", ""),
-                                tags[0],
-                                data.get("温和反馈", "")
-                            )
-                    except Exception as e:
-                        all_results.append({
-                            "题号": prob.get("题号", str(i + 1)),
-                            "题目": prob.get("题目", ""),
-                            "学生答案": prob.get("学生答案", ""),
-                            "data": None,
-                            "error": str(e),
-                        })
-                    progress.progress((i + 1) / len(problems), text=f"已分析 {i+1}/{len(problems)} 道")
-
-                # 分析完成后自动标注错题
-                if wrong_nums:
-                    progress.progress(1.0, text="正在标注错题位置…")
-                    try:
-                        boxes = get_wrong_positions(
-                            img_b64, mime, wrong_nums
-                        )
-                        if boxes:
-                            st.session_state.annotated_img = annotate_image(img_bytes_raw, boxes)
-                    except Exception:
-                        pass  # 标注失败不阻断主流程
-
-                st.session_state.full_page_results = all_results
-                st.session_state.full_page_wrong_nums = wrong_nums
-                st.rerun()
-
-            # ── 展示分析结果 ──────────────────────────
-            if st.session_state.get("full_page_results"):
-                results = st.session_state.full_page_results
-                wrong_nums = st.session_state.get("full_page_wrong_nums", [])
-
-                ERROR_DESC = {
-                    "A1": "数字抄写错误", "A2": "计算过程错误", "A3": "基础技能薄弱",
-                    "B1": "关键概念识别错误", "B2": "运算类型误判", "B3": "变式迁移失败",
-                    "C1": "综合结构理解困难", "C2": "畏难情绪放弃", "C3": "抽象关系建模能力不足",
-                }
-
-                # ── 标注图优先展示 ────────────────────
-                if st.session_state.get("annotated_img"):
-                    st.divider()
-                    st.markdown("### 🔴 错题标注试卷")
-                    st.image(st.session_state.annotated_img,
-                             caption="红色圆圈 = 错题区域",
-                             use_container_width=True)
-                    st.download_button(
-                        "⬇️ 下载标注图片",
-                        data=st.session_state.annotated_img,
-                        file_name="错题标注.png",
-                        mime="image/png",
-                        key="dl_annotated"
-                    )
-
-                # ── 汇总提示 ─────────────────────────
-                st.divider()
-                if wrong_nums:
-                    st.warning(f"共发现 **{len(wrong_nums)}** 道错题：第 {', '.join(wrong_nums)} 题")
-                else:
-                    st.success("未发现明显错误，做得不错！")
-
-                # ── 逐题展示（错题展开，正确题折叠）────
-                st.markdown("### 📋 逐题分析报告")
-                for r in results:
-                    d = r.get("data")
-                    num = r.get("题号", "?")
-                    orig_q = r.get("题目", "")
-                    orig_a = r.get("学生答案", "")
-                    ques_type = r.get("题型", "")
-
-                    if d:
-                        tags = d.get("错因标签", [])
-                        is_wrong = d.get("答案是否有误", False)
-
-                        if is_wrong:
-                            st.markdown(
-                                f"<div style='background:#FFF1F0;border-left:4px solid #FF4D4F;"
-                                f"border-radius:8px;padding:1rem 1.2rem;margin-bottom:1rem;'>"
-                                f"<b style='font-size:1.05rem;color:#CF1322;'>❌ 第 {num} 题"
-                                f"{' · ' + ques_type if ques_type else ''}（有误）</b>"
-                                f"</div>",
-                                unsafe_allow_html=True
-                            )
-                            with st.container(border=True):
-                                st.markdown("**📝 原题**")
-                                st.markdown(orig_q)
-                                st.markdown("**✏️ 学生答案**")
-                                st.markdown(orig_a)
-                                st.divider()
-                                st.markdown(f"**📌 题型判断**：{d.get('题型判断', '-')}")
-
-                                st.markdown("**🏷️ 错因标签**")
-                                for tag in tags:
-                                    st.error(f"**{tag}** — {ERROR_DESC.get(tag, '')}")
-
-                                st.markdown("**🔍 判断理由**")
-                                for reason in d.get("判断理由", []):
-                                    st.markdown(f"• {reason}")
-
-                                st.markdown("**💡 建议干预策略**")
-                                for s in d.get("建议干预策略", []):
-                                    st.markdown(f"• {s}")
-
-                                st.markdown("**💬 温和反馈**")
-                                st.info(d.get("温和反馈", ""))
-                        else:
-                            with st.expander(f"✅ 第 {num} 题{' · ' + ques_type if ques_type else ''}（正确）"):
-                                st.markdown(orig_q)
-                                st.caption(d.get("题型判断", ""))
-                                if d.get("温和反馈"):
-                                    st.info(d.get("温和反馈", ""))
-                    elif r.get("error"):
-                        st.error(f"第 {num} 题分析失败：{r['error']}")
-
-        # 整页模式下不显示单题输入框
-        st.stop()
-
-# ── 单题模式：手动输入区域 ────────────────────────────
 question = st.text_area("请输入原题：",
                         value=st.session_state.get("ocr_text", ""),
                         height=100)
@@ -486,11 +419,11 @@ if st.button("开始分析", type="primary"):
         user_prompt = f"学科：{SUBJECT}\n\n题目：\n{question.strip()}\n\n学生作答：\n{student_answer.strip()}"
         with st.spinner("AI正在分析中..."):
             try:
-                result_raw = chat(model=MODEL, system=SYSTEM_PROMPT, user=user_prompt, temperature=0.2)
+                result_raw = chat(model=MODEL, system=TEXT_SYSTEM_PROMPT, user=user_prompt, temperature=0.2)
                 try:
                     data = safe_json_loads(result_raw)
                 except Exception:
-                    result_raw = chat(model=MODEL, system=SYSTEM_PROMPT, user=user_prompt, temperature=0.0)
+                    result_raw = chat(model=MODEL, system=TEXT_SYSTEM_PROMPT, user=user_prompt, temperature=0.0)
                     data = safe_json_loads(result_raw)
                 tags = data.get("错因标签", [])
                 is_wrong = data.get("答案是否有误", False)
@@ -522,29 +455,19 @@ if st.session_state.analysis_result:
     st.success("分析完成")
 
     ERROR_DESC = {
-        "A1": "数字抄写错误",
-        "A2": "计算过程错误",
-        "A3": "基础技能薄弱",
-        "B1": "关键概念识别错误",
-        "B2": "运算类型误判",
-        "B3": "变式迁移失败",
-        "C1": "综合结构理解困难",
-        "C2": "畏难情绪放弃",
-        "C3": "抽象关系建模能力不足",
+        "A1": "抄写/转录错误", "A2": "解题过程错误", "A3": "基础知识薄弱",
+        "B1": "关键概念识别错误", "B2": "解题方法误判", "B3": "知识迁移失败",
+        "C1": "综合理解困难", "C2": "畏难情绪放弃", "C3": "抽象思维不足",
     }
 
     with st.container(border=True):
         st.markdown(f"**📌 题型判断**：{data.get('题型判断', '-')}")
-
         st.markdown("**🏷️ 错因标签**")
         for tag in data.get("错因标签", []):
-            desc = ERROR_DESC.get(tag, "")
-            st.error(f"**{tag}** — {desc}")
-
+            st.error(f"**{tag}** — {ERROR_DESC.get(tag, '')}")
         st.markdown("**🔍 判断理由**")
         for reason in data.get("判断理由", []):
             st.write(f"• {reason}")
-
         st.markdown("**💡 建议干预策略**")
         for strategy in data.get("建议干预策略", []):
             st.write(f"• {strategy}")
@@ -574,7 +497,6 @@ if st.session_state.main_error != "UNKNOWN" and st.session_state.error_count >= 
 
     if st.session_state.get("drill_requested"):
         st.session_state.drill_requested = False
-        # derive grade hint from student's class name
         class_name = st.session_state.get("user", {}).get("class_name", "")
         if any(k in class_name for k in ("高一", "高二", "高三")):
             grade_hint = "高中"
