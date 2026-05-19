@@ -62,7 +62,7 @@ def _raise_with_body(resp):
 def chat(model, system, user, temperature=0.3):
     provider = _get_provider(model)
     try:
-        with httpx.Client(timeout=60) as client:
+        with httpx.Client(timeout=120) as client:
             resp = client.post(
                 provider["base_url"],
                 headers=_get_headers(model),
