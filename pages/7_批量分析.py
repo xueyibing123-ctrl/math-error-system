@@ -104,15 +104,26 @@ def safe_json_loads(s: str):
     raise ValueError("JSON parse failed")
 
 
+def _build_batch_ref(bank: dict) -> str:
+    """构建题库参考注入文本（含评分细则）。"""
+    ref = (f"\n\n【📚 题库参考答案（来源：{bank['source'] or '题库'}）】\n{bank['correct_answer']}\n"
+           f"请以此为标准答案判断学生作答，不要自行推导答案。")
+    criteria = bank.get("scoring_criteria", [])
+    if criteria:
+        total_pts = bank.get("total_points", 0)
+        ref += f"\n\n【按点给分】本题共 {total_pts} 分，请严格按以下评分细则逐点打分，并在JSON中额外输出 \"得分\"、\"满分\"、\"按点得分\" 字段：\n"
+        for c in criteria:
+            ref += f"- {c['criterion']}：{c['points']} 分\n"
+        ref += ("\"按点得分\" 格式：[{\"要点\":\"...\",\"满分\":N,\"得分\":M,\"说明\":\"一句话说明\"},...]\n"
+                "\"得分\" 为整数实际总得分，\"满分\" 为整数总分。")
+    return ref
+
+
 def analyze_one(idx, question, steps, model, subject, student_id):
-    """单题分析，用于并行调用。优先使用题库答案。"""
+    """单题分析，用于并行调用。优先使用题库答案（含按点给分）。"""
     bank = search_question_bank(question, subject=subject)
-    if bank:
-        ref = (f"\n\n【📚 题库参考答案（来源：{bank['source'] or '题库'}）】\n{bank['correct_answer']}\n"
-               f"请以此为标准答案判断学生作答，不要自行推导答案。")
-        user_prompt = f"学科：{subject}\n\n题目：\n{question}\n\n学生作答：\n{steps}{ref}"
-    else:
-        user_prompt = f"学科：{subject}\n\n题目：\n{question}\n\n学生作答：\n{steps}"
+    base = f"学科：{subject}\n\n题目：\n{question}\n\n学生作答：\n{steps}"
+    user_prompt = base + (_build_batch_ref(bank) if bank else "")
     try:
         result_raw = chat(model=model, system=SYSTEM_PROMPT, user=user_prompt, temperature=0.2)
         try:
@@ -131,6 +142,12 @@ def analyze_one(idx, question, steps, model, subject, student_id):
             upsert_alert(student_id=student_id, error_code=main_error,
                          error_count=error_count, threshold=DRILL_THRESHOLD)
 
+        scoring_str = ""
+        if data.get("按点得分"):
+            got = data.get("得分", 0)
+            full = data.get("满分", 0)
+            scoring_str = f"得分：{got}/{full}分"
+
         return idx, {
             "题号": idx + 1,
             "题目": question[:40] + "…" if len(question) > 40 else question,
@@ -138,6 +155,8 @@ def analyze_one(idx, question, steps, model, subject, student_id):
             "错因": main_error,
             "题型": data.get("题型判断", "-"),
             "反馈": data.get("温和反馈", "-"),
+            "得分": scoring_str,
+            "按点得分": data.get("按点得分", []),
             "状态": "✅ 完成",
             "是否有误": is_wrong,
         }
@@ -147,7 +166,8 @@ def analyze_one(idx, question, steps, model, subject, student_id):
             "题目": question[:40] + "…" if len(question) > 40 else question,
             "步骤": steps[:30] + "…" if len(steps) > 30 else steps,
             "错因": "UNKNOWN", "题型": "-",
-            "反馈": f"分析失败：{e}", "状态": "❌ 失败", "是否有误": False,
+            "反馈": f"分析失败：{e}", "得分": "", "按点得分": [],
+            "状态": "❌ 失败", "是否有误": False,
         }
 
 
@@ -304,7 +324,8 @@ if st.session_state.get("batch_results"):
     st.divider()
     st.subheader("📊 分析结果")
     df = pd.DataFrame(results)
-    st.dataframe(df[["题号", "题目", "错因", "题型", "状态"]], use_container_width=True)
+    display_cols = [c for c in ["题号", "题目", "错因", "得分", "题型", "状态"] if c in df.columns]
+    st.dataframe(df[display_cols], use_container_width=True)
 
     st.divider()
     st.subheader("🔍 本次错因汇总")
@@ -328,12 +349,22 @@ if st.session_state.get("batch_results"):
                 col1, col2 = st.columns([3, 1])
                 with col1:
                     wrong_mark = "❌" if r.get("是否有误") else "✅"
-                    st.markdown(f"**第{r['题号']}题** {wrong_mark} · 错因：`{r['错因']}`")
+                    score_badge = f" · {r['得分']}" if r.get("得分") else ""
+                    st.markdown(f"**第{r['题号']}题** {wrong_mark} · 错因：`{r['错因']}`{score_badge}")
                     st.caption(r["题目"])
                 with col2:
                     st.markdown(f"**{r['状态']}**")
+                breakdown = r.get("按点得分", [])
+                if breakdown:
+                    for item in breakdown:
+                        icon = "✅" if item.get("得分", 0) >= item.get("满分", 1) else "❌"
+                        st.markdown(
+                            f"{icon} **{item.get('要点','')}**（满分{item.get('满分',0)}分）"
+                            f"　得 **{item.get('得分',0)}** 分　— {item.get('说明','')}"
+                        )
+                    st.divider()
                 st.write(r["反馈"])
 
-    csv = df.drop(columns=["是否有误"], errors="ignore").to_csv(index=False).encode("utf-8-sig")
+    csv = df.drop(columns=["是否有误", "按点得分"], errors="ignore").to_csv(index=False).encode("utf-8-sig")
     st.download_button("⬇️ 导出批量分析结果", data=csv,
                        file_name="batch_analysis.csv", mime="text/csv")

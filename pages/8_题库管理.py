@@ -1,14 +1,15 @@
 import os
+import json
 import base64
 import streamlit as st
 from dotenv import load_dotenv
-from db import init_question_bank, add_question, get_all_questions, delete_question, count_questions
+from db import (init_question_bank, add_question, get_all_questions,
+                delete_question, count_questions)
 from llm_client import chat_with_image
 from ui import icon_title
 
 load_dotenv()
 
-# 登录守卫（仅教师可访问）
 if not st.session_state.get("logged_in"):
     st.warning("请先登录")
     st.stop()
@@ -16,7 +17,6 @@ if st.session_state.get("user", {}).get("role") != "teacher":
     st.warning("仅教师可管理题库")
     st.stop()
 
-# 初始化题库表
 try:
     init_question_bank()
 except Exception:
@@ -25,7 +25,6 @@ except Exception:
 SUBJECTS = ["数学", "语文", "英语", "物理", "化学", "历史", "政治", "生物", "地理", "其他"]
 GRADES = ["小学一年级", "小学二年级", "小学三年级", "小学四年级", "小学五年级", "小学六年级",
           "初一", "初二", "初三", "高一", "高二", "高三", "通用"]
-
 VISION_MODELS = {
     "qwen-vl-plus（通义视觉·快速）": "qwen-vl-plus",
     "qwen-vl-max（通义视觉·高精度）": "qwen-vl-max",
@@ -33,18 +32,58 @@ VISION_MODELS = {
 }
 
 icon_title("assets/icons/批量分析.svg", "题库管理")
-st.caption("教师上传教辅资料和答案，分析时自动检索提升准确率。")
+st.caption("录入题目、答案与评分细则，分析时自动检索并按点给分。")
 
 uploaded_by = st.session_state.get("user", {}).get("username", "teacher")
-
-# ── 统计信息 ─────────────────────────────────────────
 total = count_questions()
+
 col1, col2, col3 = st.columns(3)
 col1.metric("题库总量", f"{total} 题")
-col2.metric("覆盖功能", "错因分析 + 批量分析")
+col2.metric("支持功能", "按点给分 · 错因分析")
 col3.metric("检索方式", "模糊匹配自动命中")
 
 st.divider()
+
+
+def criteria_editor(key_prefix: str, init_criteria: list = None):
+    """评分细则编辑器，返回 (criteria_list, total_points)"""
+    if f"{key_prefix}_criteria" not in st.session_state:
+        st.session_state[f"{key_prefix}_criteria"] = init_criteria or []
+
+    criteria = st.session_state[f"{key_prefix}_criteria"]
+
+    st.markdown("**📊 评分细则（可选，适用于应用题/阅读理解等主观题）**")
+    st.caption("每行填一个得分点和对应分值，模型会逐点判断学生是否得分")
+
+    updated = []
+    for i, item in enumerate(criteria):
+        c1, c2, c3 = st.columns([5, 1, 0.5])
+        with c1:
+            crit = st.text_input(f"得分点 {i+1}", value=item.get("criterion", ""),
+                                 key=f"{key_prefix}_crit_{i}", label_visibility="collapsed",
+                                 placeholder=f"得分点{i+1}，如：列式正确 / 答出主旨大意")
+        with c2:
+            pts = st.number_input(f"分值{i+1}", min_value=0, max_value=20,
+                                  value=item.get("points", 1),
+                                  key=f"{key_prefix}_pts_{i}", label_visibility="collapsed")
+        with c3:
+            if st.button("✕", key=f"{key_prefix}_del_{i}"):
+                criteria.pop(i)
+                st.rerun()
+        if crit.strip():
+            updated.append({"criterion": crit.strip(), "points": int(pts)})
+
+    st.session_state[f"{key_prefix}_criteria"] = updated
+
+    if st.button("＋ 添加得分点", key=f"{key_prefix}_add"):
+        st.session_state[f"{key_prefix}_criteria"].append({"criterion": "", "points": 1})
+        st.rerun()
+
+    total_pts = sum(c["points"] for c in updated)
+    if updated:
+        st.caption(f"共 **{total_pts}** 分，{len(updated)} 个得分点")
+    return updated, total_pts
+
 
 tab1, tab2 = st.tabs(["➕ 录入题目", "📚 题库列表"])
 
@@ -52,75 +91,47 @@ tab1, tab2 = st.tabs(["➕ 录入题目", "📚 题库列表"])
 # Tab1: 录入题目
 # ══════════════════════════════════════════════════════
 with tab1:
-    st.markdown("### 录入方式")
-    input_mode = st.radio("", ["✏️ 手动输入", "📷 拍照/上传图片（OCR识别）"], horizontal=True, key="input_mode")
+    input_mode = st.radio("录入方式", ["✏️ 手动输入", "📷 拍照/上传图片（OCR识别）"],
+                          horizontal=True, key="input_mode")
 
     col_s, col_g = st.columns(2)
     with col_s:
         subject = st.selectbox("学科", SUBJECTS, key="qb_subject")
     with col_g:
         grade = st.selectbox("年级", GRADES, key="qb_grade")
-    source = st.text_input("来源（教材/试卷名称，如：人教版八年级数学上册期中卷）", key="qb_source")
+    source = st.text_input("来源（如：人教版八年级数学上册期中卷）", key="qb_source")
 
     if input_mode == "✏️ 手动输入":
-        st.markdown("**单题录入**")
-        question_text = st.text_area("题目内容（含选项）", height=120, key="qb_q")
-        correct_answer = st.text_area("正确答案（含解题过程）", height=100, key="qb_a")
+        question_text = st.text_area("题目内容（含题干和选项）", height=120, key="qb_q",
+                                     placeholder="例：小明买了3本书，每本12元，一共花了多少钱？")
+        correct_answer = st.text_area("参考答案（含解题过程）", height=100, key="qb_a",
+                                      placeholder="例：12×3=36（元），答：一共花了36元。")
+
+        criteria, total_pts = criteria_editor("manual")
+
         if st.button("✅ 录入到题库", type="primary", key="btn_add_single"):
             if not question_text.strip() or not correct_answer.strip():
                 st.warning("题目和答案不能为空")
             else:
-                add_question(subject, grade, source, question_text.strip(),
-                             correct_answer.strip(), uploaded_by)
-                st.success("✅ 录入成功！")
-                st.rerun()
-
-        st.divider()
-        st.markdown("**批量录入（多题用 `---` 分隔，每题格式：题目在前，答案用「答：」开头）**")
-        st.code("题目：小明有5个苹果……\n答：5×3=15，答案是15个\n---\n题目：……\n答：……", language="text")
-        batch_text = st.text_area("批量粘贴", height=200, key="qb_batch")
-        if st.button("批量录入", key="btn_batch_add"):
-            blocks = [b.strip() for b in batch_text.split("---") if b.strip()]
-            ok, fail = 0, 0
-            for block in blocks:
-                lines = block.split("\n")
-                q_lines, a_lines = [], []
-                in_answer = False
-                for line in lines:
-                    stripped = line.strip()
-                    if stripped.startswith("答：") or stripped.startswith("答:"):
-                        in_answer = True
-                        a_lines.append(stripped[2:].strip())
-                    elif in_answer:
-                        a_lines.append(stripped)
-                    else:
-                        q_lines.append(stripped)
-                q = "\n".join(q_lines).replace("题目：", "").replace("题目:", "").strip()
-                a = "\n".join(a_lines).strip()
-                if q and a:
-                    add_question(subject, grade, source, q, a, uploaded_by)
-                    ok += 1
-                else:
-                    fail += 1
-            st.success(f"✅ 批量录入完成：{ok} 题成功，{fail} 题格式有误跳过")
-            if ok:
+                add_question(subject, grade, source,
+                             question_text.strip(), correct_answer.strip(),
+                             total_points=total_pts,
+                             scoring_criteria=criteria,
+                             uploaded_by=uploaded_by)
+                st.success(f"✅ 录入成功！{'（含 ' + str(len(criteria)) + ' 个评分细则，共 ' + str(total_pts) + ' 分）' if criteria else ''}")
+                st.session_state["manual_criteria"] = []
                 st.rerun()
 
     else:
-        st.markdown("**上传试卷/教辅图片，AI自动识别题目和答案**")
-        ocr_model_label = st.selectbox("识别模型", list(VISION_MODELS.keys()), key="qb_ocr_model")
-        OCR_MODEL = VISION_MODELS[ocr_model_label]
+        ocr_label = st.selectbox("识别模型", list(VISION_MODELS.keys()), key="qb_ocr_model")
+        OCR_MODEL = VISION_MODELS[ocr_label]
+        uploaded_file = st.file_uploader("上传图片（JPG/PNG）", type=["jpg", "jpeg", "png"], key="qb_img")
 
-        uploaded_file = st.file_uploader("上传图片（支持JPG/PNG）", type=["jpg", "jpeg", "png"], key="qb_img")
         if uploaded_file:
             img_bytes = uploaded_file.read()
             st.image(img_bytes, use_container_width=True)
 
-            if st.button("🔍 OCR识别并提取题目和答案", type="primary", key="btn_qb_ocr"):
-                suffix = uploaded_file.name.split(".")[-1].lower()
-                mime = "image/jpeg" if suffix in ("jpg", "jpeg") else "image/png"
-
-                # 压缩图片
+            if st.button("🔍 OCR识别题目、答案和评分细则", type="primary", key="btn_qb_ocr"):
                 from PIL import Image
                 import io
                 img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
@@ -130,60 +141,70 @@ with tab1:
                     img = img.resize((int(w*ratio), int(h*ratio)), Image.LANCZOS)
                 buf = io.BytesIO()
                 img.save(buf, format="JPEG", quality=82)
-                compressed = buf.getvalue()
-                img_b64 = base64.b64encode(compressed).decode()
+                img_b64 = base64.b64encode(buf.getvalue()).decode()
 
-                with st.spinner("正在识别题目和答案…"):
+                with st.spinner("正在识别…"):
                     try:
-                        prompt = f"""请识别这张图片中的所有题目和对应的正确答案。学科：{subject}。
+                        prompt = f"""识别图片中所有题目、参考答案和评分细则。学科：{subject}。
 
-严格输出JSON数组，每道题一个对象：
+严格输出JSON数组：
 [
   {{
-    "题目": "完整题目内容（含选项）",
-    "答案": "正确答案和解析过程"
+    "题目": "完整题目内容",
+    "答案": "参考答案和解析过程",
+    "评分细则": [
+      {{"criterion": "得分点描述", "points": 分值}},
+      {{"criterion": "得分点描述", "points": 分值}}
+    ],
+    "总分": 整数
   }}
 ]
 
-只输出JSON，不要任何其他文字。"""
+若图片中没有明确评分细则，"评分细则"填[]，"总分"填0。只输出JSON。"""
                         raw = chat_with_image(image_b64=img_b64, mime_type="image/jpeg",
                                               model=OCR_MODEL, prompt=prompt)
-                        import json, re
-                        # 解析JSON
                         raw = raw.strip()
-                        match = re.search(r"\[[\s\S]*\]", raw)
-                        if match:
-                            items = json.loads(match.group())
-                        else:
-                            items = json.loads(raw)
-
+                        match = __import__("re").search(r"\[[\s\S]*\]", raw)
+                        items = json.loads(match.group() if match else raw)
                         st.session_state["qb_ocr_items"] = items
-                        st.success(f"识别完成，共发现 {len(items)} 道题目，请确认后录入")
+                        st.success(f"识别完成，共 {len(items)} 道题，请确认后录入")
                     except Exception as e:
                         st.error(f"识别失败：{e}")
 
-            # 展示识别结果并确认录入
-            if st.session_state.get("qb_ocr_items"):
-                items = st.session_state["qb_ocr_items"]
-                st.markdown(f"**识别到 {len(items)} 道题，可逐题编辑后录入：**")
-                for i, item in enumerate(items):
-                    with st.expander(f"第 {i+1} 题", expanded=True):
-                        q_val = st.text_area("题目", value=item.get("题目", ""), key=f"ocr_q_{i}", height=100)
-                        a_val = st.text_area("答案", value=item.get("答案", ""), key=f"ocr_a_{i}", height=80)
-                        items[i]["题目"] = q_val
-                        items[i]["答案"] = a_val
+        if st.session_state.get("qb_ocr_items"):
+            items = st.session_state["qb_ocr_items"]
+            for i, item in enumerate(items):
+                with st.expander(f"第 {i+1} 题（点击编辑）", expanded=True):
+                    q_val = st.text_area("题目", value=item.get("题目", ""),
+                                         key=f"ocr_q_{i}", height=100)
+                    a_val = st.text_area("答案", value=item.get("答案", ""),
+                                         key=f"ocr_a_{i}", height=80)
+                    items[i]["题目"] = q_val
+                    items[i]["答案"] = a_val
 
-                if st.button("✅ 全部录入题库", type="primary", key="btn_ocr_import"):
-                    ok = 0
-                    for item in items:
-                        q = item.get("题目", "").strip()
-                        a = item.get("答案", "").strip()
-                        if q and a:
-                            add_question(subject, grade, source, q, a, uploaded_by)
-                            ok += 1
-                    st.success(f"✅ 成功录入 {ok} 道题目！")
-                    st.session_state["qb_ocr_items"] = None
-                    st.rerun()
+                    # 显示并可编辑评分细则
+                    raw_criteria = item.get("评分细则", [])
+                    if f"ocr_criteria_{i}" not in st.session_state:
+                        st.session_state[f"ocr_criteria_{i}"] = raw_criteria
+                    ocr_criteria, ocr_pts = criteria_editor(f"ocr_{i}",
+                                                            st.session_state[f"ocr_criteria_{i}"])
+                    items[i]["评分细则"] = ocr_criteria
+                    items[i]["总分"] = ocr_pts
+
+            if st.button("✅ 全部录入题库", type="primary", key="btn_ocr_import"):
+                ok = 0
+                for item in items:
+                    q = item.get("题目", "").strip()
+                    a = item.get("答案", "").strip()
+                    if q and a:
+                        add_question(subject, grade, source, q, a,
+                                     total_points=item.get("总分", 0),
+                                     scoring_criteria=item.get("评分细则", []),
+                                     uploaded_by=uploaded_by)
+                        ok += 1
+                st.success(f"✅ 成功录入 {ok} 道题目！")
+                st.session_state["qb_ocr_items"] = None
+                st.rerun()
 
 # ══════════════════════════════════════════════════════
 # Tab2: 题库列表
@@ -193,11 +214,12 @@ with tab2:
     with col_f1:
         filter_subject = st.selectbox("筛选学科", ["全部"] + SUBJECTS, key="qb_filter_sub")
     with col_f2:
-        keyword = st.text_input("关键词搜索", placeholder="输入题目关键词...", key="qb_keyword")
+        keyword = st.text_input("关键词搜索", placeholder="题目关键词...", key="qb_keyword")
 
-    subject_filter = None if filter_subject == "全部" else filter_subject
-    questions = get_all_questions(subject=subject_filter, keyword=keyword or None, limit=200)
-
+    questions = get_all_questions(
+        subject=None if filter_subject == "全部" else filter_subject,
+        keyword=keyword or None
+    )
     st.markdown(f"共 **{len(questions)}** 条记录")
 
     if not questions:
@@ -207,20 +229,33 @@ with tab2:
             with st.container(border=True):
                 col_info, col_del = st.columns([5, 1])
                 with col_info:
-                    st.markdown(f"**[{q['subject']}·{q['grade']}]** {q['source'] or '无来源'} "
-                                f"<span style='color:#9CA3C0;font-size:0.8rem;'>by {q['uploaded_by']} · "
-                                f"{str(q['created_at'])[:10]}</span>", unsafe_allow_html=True)
-                    with st.expander("查看题目与答案"):
+                    pts_badge = f" · **{q['total_points']}分**" if q.get("total_points") else ""
+                    st.markdown(
+                        f"**[{q['subject']}·{q['grade']}]**{pts_badge} {q['source'] or '无来源'} "
+                        f"<span style='color:#9CA3C0;font-size:0.8rem;'>· {str(q['created_at'])[:10]}</span>",
+                        unsafe_allow_html=True)
+                    with st.expander("查看题目、答案与评分细则"):
                         st.markdown(f"**📝 题目：**\n\n{q['question_text']}")
                         st.markdown(f"**✅ 答案：**\n\n{q['correct_answer']}")
+                        try:
+                            criteria = json.loads(q.get("scoring_criteria") or "[]")
+                        except Exception:
+                            criteria = []
+                        if criteria:
+                            st.markdown("**📊 评分细则：**")
+                            for c in criteria:
+                                st.markdown(f"- {c['criterion']}（**{c['points']}分**）")
                 with col_del:
-                    if st.button("🗑️ 删除", key=f"del_{q['id']}"):
+                    if st.button("🗑️", key=f"del_{q['id']}", help="删除"):
                         delete_question(q["id"])
                         st.rerun()
 
-    if questions:
         import pandas as pd
-        df = pd.DataFrame(questions)[["subject", "grade", "source", "question_text", "correct_answer", "uploaded_by", "created_at"]]
-        df.columns = ["学科", "年级", "来源", "题目", "答案", "录入人", "时间"]
+        df = pd.DataFrame(questions)
+        df["scoring_criteria"] = df["scoring_criteria"].fillna("[]")
+        export_cols = ["subject", "grade", "source", "question_text",
+                       "correct_answer", "total_points", "scoring_criteria"]
+        df = df[[c for c in export_cols if c in df.columns]]
+        df.columns = ["学科", "年级", "来源", "题目", "答案", "总分", "评分细则"][:len(df.columns)]
         csv = df.to_csv(index=False).encode("utf-8-sig")
         st.download_button("⬇️ 导出题库CSV", data=csv, file_name="题库.csv", mime="text/csv")

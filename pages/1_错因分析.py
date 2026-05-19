@@ -124,21 +124,52 @@ COMBINED_PROMPT = """你是通用学科错因分析系统，请完成两步工�
 答案正确时：答案是否有误=false，错因标签/判断理由/建议干预策略均为[]"""
 
 
-def build_user_prompt(subject: str, question: str, student_answer: str) -> tuple[str, bool]:
+def build_scoring_ref(bank: dict) -> str:
+    """从题库命中结果构建注入到 prompt 的参考文本（含评分细则）。"""
+    ref = (
+        f"\n\n【📚 题库参考答案（相似度 {bank['similarity']:.0%}，来源：{bank['source'] or '题库'}）】\n"
+        f"{bank['correct_answer']}\n"
+        f"请以此为标准答案判断学生作答是否正确，不要自行推导答案。"
+    )
+    criteria = bank.get("scoring_criteria", [])
+    if criteria:
+        total_pts = bank.get("total_points", 0)
+        ref += f"\n\n【按点给分】本题共 {total_pts} 分，请严格按以下评分细则逐点打分，并在JSON中额外输出 \"得分\"、\"满分\"、\"按点得分\" 字段：\n"
+        for c in criteria:
+            ref += f"- {c['criterion']}：{c['points']} 分\n"
+        ref += ("\"按点得分\" 格式：[{\"要点\":\"...\",\"满分\":N,\"得分\":M,\"说明\":\"一句话说明\"},...]\n"
+                "\"得分\" 为整数实际总得分，\"满分\" 为整数总分。")
+    return ref
+
+
+def build_user_prompt(subject: str, question: str, student_answer: str) -> tuple[str, bool, list]:
     """
     构造分析用的 user_prompt。
-    如果题库命中，把正确答案注入提示词，返回 (prompt, hit_from_bank)。
+    如果题库命中，把正确答案（含评分细则）注入提示词。
+    返回 (prompt, hit_from_bank, scoring_criteria)。
     """
     bank = search_question_bank(question, subject=subject)
     if bank:
-        ref = (
-            f"\n\n【📚 题库参考答案（相似度 {bank['similarity']:.0%}，来源：{bank['source'] or '题库'}）】\n"
-            f"{bank['correct_answer']}\n"
-            f"请以此为标准答案判断学生作答是否正确，不要自行推导答案。"
-        )
+        ref = build_scoring_ref(bank)
         prompt = f"学科：{subject}\n\n题目：\n{question}\n\n学生作答：\n{student_answer}{ref}"
-        return prompt, True
-    return f"学科：{subject}\n\n题目：\n{question}\n\n学生作答：\n{student_answer}", False
+        return prompt, True, bank.get("scoring_criteria", [])
+    return f"学科：{subject}\n\n题目：\n{question}\n\n学生作答：\n{student_answer}", False, []
+
+
+def render_scoring(data: dict):
+    """如果分析结果含按点得分，渲染得分明细。"""
+    breakdown = data.get("按点得分")
+    if not breakdown:
+        return
+    total = data.get("满分", 0)
+    got = data.get("得分", 0)
+    st.markdown(f"**📊 按点得分：{got} / {total} 分**")
+    for item in breakdown:
+        icon = "✅" if item.get("得分", 0) >= item.get("满分", 1) else "❌"
+        st.markdown(
+            f"{icon} **{item.get('要点','')}**（满分 {item.get('满分',0)} 分）"
+            f"　得 **{item.get('得分',0)}** 分　— {item.get('说明','')}"
+        )
 
 
 def safe_json_loads(s: str):
@@ -343,6 +374,7 @@ if page_mode == "📷 拍照整页·单模型（识题+分析一次完成，最�
                     st.markdown("**✏️ 学生答案**")
                     st.markdown(orig_a)
                     st.divider()
+                    render_scoring(r)
                     st.markdown(f"**📌 题型判断**：{r.get('题型判断', '-')}")
                     st.markdown("**🏷️ 错因标签**")
                     for tag in tags:
@@ -440,7 +472,9 @@ elif page_mode == "📷 拍照整页·双模型（OCR模型+分析模型，可�
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
             def _analyze(prob, idx):
-                user_prompt = f"学科：{SUBJECT}\n\n题目：\n{prob.get('题目','')}\n\n学生作答：\n{prob.get('学生答案','')}"
+                base = f"学科：{SUBJECT}\n\n题目：\n{prob.get('题目','')}\n\n学生作答：\n{prob.get('学生答案','')}"
+                bank = search_question_bank(prob.get("题目", ""), subject=SUBJECT)
+                user_prompt = base + (build_scoring_ref(bank) if bank else "")
                 result_raw = chat(model=ANA_MODEL, system=TEXT_SYSTEM_PROMPT, user=user_prompt, temperature=0.2)
                 return idx, safe_json_loads(result_raw)
 
@@ -508,6 +542,7 @@ elif page_mode == "📷 拍照整页·双模型（OCR模型+分析模型，可�
                         st.markdown(f"**📝 原题**\n\n{orig_q}")
                         st.markdown(f"**✏️ 学生答案**\n\n{orig_a}")
                         st.divider()
+                        render_scoring(d)
                         st.markdown(f"**📌 题型判断**：{d.get('题型判断','-')}")
                         for tag in tags:
                             st.error(f"**{tag}** — {ERROR_DESC2.get(tag,'')}")
@@ -576,7 +611,7 @@ if st.button("开始分析", type="primary"):
     if not question.strip() or not student_answer.strip():
         st.warning("请填写完整信息")
     else:
-        user_prompt, hit = build_user_prompt(SUBJECT, question.strip(), student_answer.strip())
+        user_prompt, hit, _ = build_user_prompt(SUBJECT, question.strip(), student_answer.strip())
         if hit:
             st.info("📚 已命中题库，使用题库答案作为评判标准")
         with st.spinner("AI正在分析中..."):
@@ -634,6 +669,7 @@ if st.session_state.analysis_result:
         for strategy in data.get("建议干预策略", []):
             st.write(f"• {strategy}")
 
+    render_scoring(data)
     st.markdown("### 💬 温和反馈")
     st.info(data.get("温和反馈", ""))
     if st.session_state.main_error != "UNKNOWN" and st.session_state.error_count >= DRILL_THRESHOLD:

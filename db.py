@@ -290,7 +290,7 @@ def init_users_table():
 # ═══════════════════════════════════════════════════════
 
 def init_question_bank():
-    """创建题库表（首次调用时执行）。"""
+    """创建题库表，并为旧表补充新字段。"""
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
@@ -301,22 +301,40 @@ def init_question_bank():
             source VARCHAR(200) DEFAULT '',
             question_text TEXT NOT NULL,
             correct_answer TEXT NOT NULL,
+            total_points INT DEFAULT 0,
+            scoring_criteria TEXT DEFAULT '[]',
             uploaded_by VARCHAR(100) DEFAULT '',
             created_at TIMESTAMP DEFAULT NOW()
         )
     """)
+    # 兼容旧表：按点给分字段
+    for col, defn in [("total_points", "INT DEFAULT 0"),
+                      ("scoring_criteria", "TEXT DEFAULT '[]'")]:
+        try:
+            cur.execute(f"ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS {col} {defn}")
+        except Exception:
+            pass
     conn.commit()
     cur.close()
     conn.close()
 
 
-def add_question(subject, grade, source, question_text, correct_answer, uploaded_by=""):
+def add_question(subject, grade, source, question_text, correct_answer,
+                 total_points=0, scoring_criteria=None, uploaded_by=""):
+    """
+    scoring_criteria: list of {"criterion": str, "points": int}
+    """
+    import json
+    criteria_json = json.dumps(scoring_criteria or [], ensure_ascii=False)
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO question_bank (subject, grade, source, question_text, correct_answer, uploaded_by, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
-    """, (subject, grade, source, question_text, correct_answer, uploaded_by, datetime.now()))
+        INSERT INTO question_bank
+            (subject, grade, source, question_text, correct_answer,
+             total_points, scoring_criteria, uploaded_by, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+    """, (subject, grade, source, question_text, correct_answer,
+          total_points, criteria_json, uploaded_by, datetime.now()))
     row = cur.fetchone()
     conn.commit()
     cur.close()
@@ -327,24 +345,28 @@ def add_question(subject, grade, source, question_text, correct_answer, uploaded
 def search_question_bank(question_text: str, subject: str = None, threshold: float = 0.55):
     """
     在题库中检索最相似的题目。
-    返回 {'question_text', 'correct_answer', 'source', 'similarity'} 或 None。
+    返回 {'question_text','correct_answer','source','similarity',
+           'total_points','scoring_criteria'} 或 None。
     """
+    import json
     from difflib import SequenceMatcher
     conn = get_conn()
     cur = conn.cursor()
     if subject:
         cur.execute(
-            "SELECT id, question_text, correct_answer, source FROM question_bank WHERE subject=%s",
-            (subject,)
+            "SELECT id, question_text, correct_answer, source, total_points, scoring_criteria "
+            "FROM question_bank WHERE subject=%s", (subject,)
         )
     else:
-        cur.execute("SELECT id, question_text, correct_answer, source FROM question_bank")
+        cur.execute(
+            "SELECT id, question_text, correct_answer, source, total_points, scoring_criteria "
+            "FROM question_bank"
+        )
     rows = cur.fetchall()
     cur.close()
     conn.close()
     if not rows:
         return None
-    # 对题目文字做简单预处理：去除空白
     q_norm = question_text.replace(" ", "").replace("\n", "")
     best, best_score = None, 0.0
     for row in rows:
@@ -354,11 +376,17 @@ def search_question_bank(question_text: str, subject: str = None, threshold: flo
             best_score = score
             best = row
     if best_score >= threshold:
+        try:
+            criteria = json.loads(best["scoring_criteria"] or "[]")
+        except Exception:
+            criteria = []
         return {
             "question_text": best["question_text"],
             "correct_answer": best["correct_answer"],
             "source": best["source"],
             "similarity": round(best_score, 3),
+            "total_points": best["total_points"] or 0,
+            "scoring_criteria": criteria,
         }
     return None
 
@@ -366,7 +394,9 @@ def search_question_bank(question_text: str, subject: str = None, threshold: flo
 def get_all_questions(subject=None, keyword=None, limit=200):
     conn = get_conn()
     cur = conn.cursor()
-    sql = "SELECT id, subject, grade, source, question_text, correct_answer, uploaded_by, created_at FROM question_bank WHERE 1=1"
+    sql = ("SELECT id, subject, grade, source, question_text, correct_answer, "
+           "total_points, scoring_criteria, uploaded_by, created_at "
+           "FROM question_bank WHERE 1=1")
     params = []
     if subject:
         sql += " AND subject=%s"
