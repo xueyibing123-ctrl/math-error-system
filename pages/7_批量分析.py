@@ -35,6 +35,7 @@ AVAILABLE_MODELS = {
     "DeepSeek-V4-Flash（快速·低价）": "deepseek-v4-flash",
     "DeepSeek-V3.2（均衡）": "deepseek-chat",
     "DeepSeek-R1（链式推理）": "deepseek-reasoner",
+    "Doubao-1.5-Pro-256k（豆包·旗舰）": "doubao-1-5-pro-256k-250115",
     "GLM-4.7（智谱·多步推理）": "glm-4.7",
     "GLM-4-Flash（智谱·快速免费）": "glm-4-flash",
 }
