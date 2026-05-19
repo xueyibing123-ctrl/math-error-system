@@ -144,7 +144,7 @@ def chat_with_image(image_b64: str, mime_type: str, prompt: str, model="qwen-vl-
         }
 
     try:
-        with httpx.Client(timeout=90) as client:
+        with httpx.Client(timeout=180) as client:
             resp = client.post(provider["base_url"], headers=headers, json=payload)
         _raise_with_body(resp)
         return resp.json()["choices"][0]["message"]["content"]
