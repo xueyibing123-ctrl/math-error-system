@@ -80,12 +80,26 @@ def chat(model, system, user, temperature=0.3):
 
 
 def chat_with_image(image_b64: str, mime_type: str, prompt: str, model="qwen-vl-plus", temperature=0.1):
-    """支持多平台视觉模型：qwen-vl*(DashScope)、glm-4v*(智谱)"""
+    """支持多平台视觉模型：qwen-vl*(DashScope)、glm-*(智谱)"""
     provider = _get_provider(model)
     api_key = os.getenv(provider["api_key_env"])
     if not api_key:
         raise RuntimeError(f"未检测到 {provider['api_key_env']}")
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+    # 智谱图片格式：base64直接放在 image_url.url 里，无需 data: 前缀
+    is_zhipu = model.lower().startswith("glm")
+    if is_zhipu:
+        image_content = {
+            "type": "image_url",
+            "image_url": {"url": image_b64},  # 智谱只要纯 base64
+        }
+    else:
+        image_content = {
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime_type};base64,{image_b64}"},
+        }
+
     try:
         with httpx.Client(timeout=90) as client:
             resp = client.post(
@@ -98,10 +112,7 @@ def chat_with_image(image_b64: str, mime_type: str, prompt: str, model="qwen-vl-
                         {
                             "role": "user",
                             "content": [
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": f"data:{mime_type};base64,{image_b64}"},
-                                },
+                                image_content,
                                 {"type": "text", "text": prompt},
                             ],
                         }
