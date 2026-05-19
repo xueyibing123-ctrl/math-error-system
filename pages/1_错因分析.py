@@ -19,11 +19,14 @@ load_dotenv()
 
 # 可供切换的模型列表（DashScope 兼容接口）
 AVAILABLE_MODELS = {
-    "qwen-max（通义千问·当前默认）": "qwen-max",
+    "qwen-max（通义千问·默认）": "qwen-max",
     "qwen-plus（通义千问·快速便宜）": "qwen-plus",
-    "deepseek-r1（DeepSeek·链式推理）": "deepseek-r1",
-    "deepseek-v3（DeepSeek·综合能力）": "deepseek-v3",
     "qwen2.5-math-72b（通义数学专项）": "qwen2.5-math-72b-instruct",
+    "deepseek-v4（DeepSeek·最新版）": "deepseek-chat",   # DeepSeek 官方 latest 别名
+    "deepseek-r1（DeepSeek·链式推理）": "deepseek-reasoner",
+    "deepseek-v3（DeepSeek·上一代）": "deepseek-v3",
+    "glm-4-plus（智谱·通用）": "glm-4-plus",
+    "glm-4-flash（智谱·快速免费）": "glm-4-flash",
 }
 
 DEFAULT_MODEL = os.getenv("DASHSCOPE_MODEL", "qwen-max")
