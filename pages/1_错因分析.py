@@ -44,29 +44,41 @@ for _k, _v in {
 DRILL_THRESHOLD = 3
 
 SYSTEM_PROMPT = """
-你是数学错因分析系统（识别层），适用于小学、初中、高中各年级数学题目。你必须严格输出合法JSON，不要输出任何额外文本。
+你是数学错因分析系统（识别层），适用于小学、初中、高中各年级，支持选择题、填空题、判断题、解析题、应用题、操作题、画图题等所有题型。你必须严格输出合法JSON，不要输出任何额外文本。
 
-错因标签体系（只允许从中选择）：
+【第一步】先严格验证学生答案是否正确：
+- 选择题：核对学生所选选项是否为正确答案，自己先推导正确答案再比较
+- 填空/计算/解析题：逐步验证计算过程与最终结果
+- 判断题：判断学生的结论是否正确
+- 应用题：检查建模思路和答案数值
+只有学生答案确实有误，"答案是否有误"才填true。答案正确一律填false。
+
+错因标签体系（答案正确时错因标签必须为空列表[]）：
 A1 数字抄写错误 / A2 计算过程错误 / A3 基础技能薄弱
 B1 单位一/关键概念识别错误 / B2 运算类型误判 / B3 变式迁移失败
 C1 综合结构理解困难 / C2 畏难情绪放弃 / C3 抽象关系建模能力不足
 
 请输出：
 {
+  "答案是否有误": true或false,
   "题型判断": "一句话",
   "错因标签": ["标签1","标签2（可选）"],
   "判断理由": ["理由1","理由2（可选）"],
   "建议干预策略": ["策略1","策略2"],
   "温和反馈": "给学生的引导文字（120~200字）"
 }
+
+重要：答案正确时，"答案是否有误"必须为false，"错因标签"必须为[]，"判断理由"和"建议干预策略"也为[]。
 """.strip()
 
 FULL_PAGE_OCR_PROMPT = (
-    "请仔细识别这张试卷图片中的所有题目，逐一提取每道题的内容以及学生的解答过程或答案。\n"
-    "严格输出JSON数组，包含所有题目，不得遗漏任何一道：\n"
+    "请仔细识别这张试卷图片中的所有题目，包括选择题、填空题、判断题、解析题、应用题、操作题等各种题型。\n"
+    "对每道题提取：题号、完整题目内容（选择题须包含所有选项A/B/C/D）、学生的作答内容。\n"
+    "数学符号和公式用LaTeX格式并用$...$包裹，例如：$x^2$、$\\sqrt{2}$、$\\frac{1}{2}$、$\\pm2$。\n"
+    "严格输出JSON数组，包含所有题目，不得遗漏：\n"
     "[\n"
-    "  {\"题号\": \"1\", \"题目\": \"题目文字...\", \"学生答案\": \"学生解答过程或答案...\"},\n"
-    "  {\"题号\": \"2\", \"题目\": \"...\", \"学生答案\": \"...\"}\n"
+    "  {\"题号\": \"1\", \"题型\": \"选择题\", \"题目\": \"完整题目（含选项）...\", \"学生答案\": \"学生所选或所写的答案...\"},\n"
+    "  {\"题号\": \"2\", \"题型\": \"填空题\", \"题目\": \"...\", \"学生答案\": \"...\"}\n"
     "]\n"
     "只输出JSON，不要输出其他任何文字。"
 )
@@ -194,7 +206,7 @@ if uploaded_img is not None:
                     ocr_text = chat_with_image(
                         image_b64=img_b64,
                         mime_type=mime,
-                        prompt='请识别图片内容，分两部分：1）题目 2）学生解题步骤。严格按JSON输出：{"题目": "...", "步骤": "..."}'
+                        prompt='请识别图片内容，分两部分：1）题目（含选项）2）学生解题步骤或答案。数学符号用$...$包裹LaTeX格式，如$x^2$、$\\sqrt{2}$。严格按JSON输出：{"题目": "...", "步骤": "..."}'
                     )
                     try:
                         ocr_json = safe_json_loads(ocr_text)
@@ -262,12 +274,14 @@ if uploaded_img is not None:
                             data = safe_json_loads(result_raw)
                         all_results.append({
                             "题号": prob.get("题号", str(i + 1)),
+                            "题型": prob.get("题型", ""),
                             "题目": prob.get("题目", ""),
                             "学生答案": prob.get("学生答案", ""),
                             "data": data,
                         })
+                        is_wrong = data.get("答案是否有误", False)
                         tags = data.get("错因标签", [])
-                        if tags and tags[0] != "UNKNOWN":
+                        if is_wrong and tags:
                             wrong_nums.append(str(prob.get("题号", str(i + 1))))
                             save_record(
                                 st.session_state.get("student_id", "unknown"),
@@ -342,25 +356,26 @@ if uploaded_img is not None:
                     num = r.get("题号", "?")
                     orig_q = r.get("题目", "")
                     orig_a = r.get("学生答案", "")
+                    ques_type = r.get("题型", "")
 
                     if d:
                         tags = d.get("错因标签", [])
-                        is_wrong = bool(tags and tags[0] != "UNKNOWN")
+                        is_wrong = d.get("答案是否有误", False)
 
                         if is_wrong:
-                            # 错题：直接展开显示完整分析
                             st.markdown(
                                 f"<div style='background:#FFF1F0;border-left:4px solid #FF4D4F;"
                                 f"border-radius:8px;padding:1rem 1.2rem;margin-bottom:1rem;'>"
-                                f"<b style='font-size:1.05rem;color:#CF1322;'>❌ 第 {num} 题（有误）</b>"
+                                f"<b style='font-size:1.05rem;color:#CF1322;'>❌ 第 {num} 题"
+                                f"{' · ' + ques_type if ques_type else ''}（有误）</b>"
                                 f"</div>",
                                 unsafe_allow_html=True
                             )
                             with st.container(border=True):
-                                st.markdown(f"**📝 原题**")
-                                st.write(orig_q)
-                                st.markdown(f"**✏️ 学生答案**")
-                                st.write(orig_a)
+                                st.markdown("**📝 原题**")
+                                st.markdown(orig_q)
+                                st.markdown("**✏️ 学生答案**")
+                                st.markdown(orig_a)
                                 st.divider()
                                 st.markdown(f"**📌 题型判断**：{d.get('题型判断', '-')}")
 
@@ -370,18 +385,17 @@ if uploaded_img is not None:
 
                                 st.markdown("**🔍 判断理由**")
                                 for reason in d.get("判断理由", []):
-                                    st.write(f"• {reason}")
+                                    st.markdown(f"• {reason}")
 
                                 st.markdown("**💡 建议干预策略**")
                                 for s in d.get("建议干预策略", []):
-                                    st.write(f"• {s}")
+                                    st.markdown(f"• {s}")
 
                                 st.markdown("**💬 温和反馈**")
                                 st.info(d.get("温和反馈", ""))
                         else:
-                            # 正确题：折叠显示
-                            with st.expander(f"✅ 第 {num} 题（正确）"):
-                                st.write(orig_q)
+                            with st.expander(f"✅ 第 {num} 题{' · ' + ques_type if ques_type else ''}（正确）"):
+                                st.markdown(orig_q)
                                 st.caption(d.get("题型判断", ""))
                                 if d.get("温和反馈"):
                                     st.info(d.get("温和反馈", ""))
@@ -413,7 +427,8 @@ if st.button("开始分析", type="primary"):
                     result_raw = chat(model=MODEL, system=SYSTEM_PROMPT, user=user_prompt, temperature=0.0)
                     data = safe_json_loads(result_raw)
                 tags = data.get("错因标签", [])
-                main_error = tags[0] if isinstance(tags, list) and tags else "UNKNOWN"
+                is_wrong = data.get("答案是否有误", False)
+                main_error = (tags[0] if isinstance(tags, list) and tags else "UNKNOWN") if is_wrong else "UNKNOWN"
                 save_record(
                     st.session_state.get("student_id", "unknown"),
                     question.strip(), student_answer.strip(),
