@@ -22,8 +22,7 @@ load_dotenv()
 OCR_MODELS = {
     "qwen-vl-plus（通义视觉·默认）": "qwen-vl-plus",
     "qwen-vl-max（通义视觉·高精度）": "qwen-vl-max",
-    "GLM-4V（智谱视觉·标准）": "glm-4v",
-    "GLM-4V-Plus（智谱视觉·增强）": "glm-4v-plus",
+    "GLM-5V-Turbo（智谱视觉·最新）": "glm-5v-turbo",
     "GLM-4.6V（智谱视觉·通用）": "glm-4.6v",
     "GLM-4.1V-Thinking（智谱视觉·深度思考）": "glm-4.1v-thinking",
 }
