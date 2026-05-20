@@ -209,11 +209,12 @@ with tab1:
   }
 ]"""
 
-        def _do_ocr_single(files, label="", progress_cb=None):
-            """并行 OCR 多张图片，返回按页序拼接的原始文字。"""
+        def _do_ocr_single(raw_bytes_list, label="", progress_cb=None):
+            """并行 OCR 多张图片（接受 bytes 列表，线程安全），返回按页序拼接的原始文字。"""
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
-            compressed = [(i, _compress(f.read())) for i, f in enumerate(files)]
+            # 压缩在主线程完成，线程只做网络请求
+            compressed = [(i, _compress(raw)) for i, raw in enumerate(raw_bytes_list)]
 
             def _ocr_one(args):
                 i, (b64, mime) = args
@@ -221,7 +222,7 @@ with tab1:
                                     model=OCR_MODEL, prompt=OCR_PROMPT)
                 return i, t.strip()
 
-            results = [None] * len(files)
+            results = [None] * len(raw_bytes_list)
             done = 0
             with ThreadPoolExecutor(max_workers=5) as ex:
                 futs = {ex.submit(_ocr_one, item): item[0] for item in compressed}
@@ -230,9 +231,17 @@ with tab1:
                     results[i] = text
                     done += 1
                     if progress_cb:
-                        progress_cb(done, len(files), label)
+                        progress_cb(done, len(raw_bytes_list), label)
 
             return "\n\n".join(f"--- {label}第{i+1}页 ---\n{t}" for i, t in enumerate(results))
+
+        _FILTER_RULE = """
+提取规则：
+- 只提取题目正文和对应答案，忽略以下内容：
+  页眉、页脚、页码、"仅供教师"/"教师用书"/"附加题"等标注、装订线、印刷日期、版权声明
+- 大题标题（如"一、选择题"）不单独作为一道题，并入其下各小题
+- 竖式计算题（如加减法竖式）识别为"计算：___"格式，答案填竖式结果
+"""
 
         def _structure_single(raw_text):
             sys_p = "你是题目整理助手，严格输出合法JSON，不输出任何其他文字。"
@@ -242,6 +251,7 @@ with tab1:
 
 请提取所有题目和对应答案，整理成JSON数组。
 重要：不能遗漏任何一道题，若题号不连续请仔细检查原文再确认。
+{_FILTER_RULE}
 {_SCORING_RULE}
 输出格式：
 {_JSON_SCHEMA}
@@ -260,6 +270,7 @@ with tab1:
 
 请按题号将题目与答案一一配对。
 重要：不能遗漏任何一道题，若题号不连续请仔细检查原文再确认。
+{_FILTER_RULE}
 {_SCORING_RULE}
 输出格式：
 {_JSON_SCHEMA}
@@ -302,10 +313,8 @@ with tab1:
                 if st.button("🔍 开始识别", type="primary", key="btn_qb_ocr"):
                     try:
                         n = len(files)
-                        # 预读所有图片字节，供 pHash 存储（第一张作为代表图）
+                        # 主线程预读所有字节（线程安全）
                         all_raw = [f.read() for f in files]
-                        for f in files:
-                            f.seek(0)
                         st.session_state["qb_ocr_img_bytes"] = all_raw[0] if all_raw else None
 
                         prog = st.progress(0, text=f"第①步：并行识别 {n} 张图片…")
@@ -314,7 +323,7 @@ with tab1:
                             prog.progress(int(done / total * 55),
                                           text=f"第①步：已完成 {done}/{total} 张…")
 
-                        raw_text = _do_ocr_single(files, progress_cb=_cb)
+                        raw_text = _do_ocr_single(all_raw, progress_cb=_cb)
                         prog.progress(60, text="第②步：文字模型整理题目与答案…")
                         raw_json = _structure_single(raw_text)
                         prog.progress(95, text="解析结果…")
@@ -327,7 +336,8 @@ with tab1:
                         if missing:
                             st.warning(f"⚠️ 检测到可能缺少第 **{', '.join(map(str, missing))}** 题，请检查原图并点击「＋ 手动补充一题」补录")
                     except Exception as e:
-                        st.error(f"识别失败：{e}")
+                        import traceback
+                        st.error(f"识别失败：{e or repr(e)}\n\n```\n{traceback.format_exc()}\n```")
 
         # ── 分页模式 ──────────────────────────────────────
         else:
@@ -354,11 +364,10 @@ with tab1:
                     try:
                         nq, na = len(files_q), len(files_a)
                         total_imgs = nq + na
-                        # 预读题目页第一张字节，作为代表图存储 pHash
-                        q_raw_bytes = [f.read() for f in files_q]
-                        for f in files_q:
-                            f.seek(0)
-                        st.session_state["qb_ocr_img_bytes"] = q_raw_bytes[0] if q_raw_bytes else None
+                        # 主线程预读所有字节（线程安全，避免跨线程读 UploadedFile）
+                        q_raw = [f.read() for f in files_q]
+                        a_raw = [f.read() for f in files_a]
+                        st.session_state["qb_ocr_img_bytes"] = q_raw[0] if q_raw else None
 
                         prog = st.progress(0, text=f"第①步：并行识别全部 {total_imgs} 张图片…")
                         done_count = [0]
@@ -370,8 +379,8 @@ with tab1:
 
                         from concurrent.futures import ThreadPoolExecutor, as_completed as _ac
                         with ThreadPoolExecutor(max_workers=2) as ex:
-                            fq = ex.submit(_do_ocr_single, files_q, "题目页", _cb)
-                            fa = ex.submit(_do_ocr_single, files_a, "答案页", _cb)
+                            fq = ex.submit(_do_ocr_single, q_raw, "题目页", _cb)
+                            fa = ex.submit(_do_ocr_single, a_raw, "答案页", _cb)
                             q_text = fq.result()
                             a_text = fa.result()
 
@@ -387,7 +396,8 @@ with tab1:
                         if missing:
                             st.warning(f"⚠️ 检测到可能缺少第 **{', '.join(map(str, missing))}** 题，请检查原图并点击「＋ 手动补充一题」补录")
                     except Exception as e:
-                        st.error(f"识别失败：{e}")
+                        import traceback
+                        st.error(f"识别失败：{e or repr(e)}\n\n```\n{traceback.format_exc()}\n```")
 
         if st.session_state.get("qb_ocr_items") is not None:
             items = st.session_state["qb_ocr_items"]
