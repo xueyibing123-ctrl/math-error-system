@@ -5,7 +5,7 @@ import streamlit as st
 from dotenv import load_dotenv
 from db import (init_question_bank, add_question, get_all_questions,
                 delete_question, count_questions)
-from llm_client import chat_with_image, chat_with_images
+from llm_client import chat, chat_with_image, chat_with_images
 from ui import icon_title
 
 load_dotenv()
@@ -28,7 +28,16 @@ GRADES = ["小学一年级", "小学二年级", "小学三年级", "小学四年
 VISION_MODELS = {
     "qwen-vl-plus（通义视觉·快速）": "qwen-vl-plus",
     "qwen-vl-max（通义视觉·高精度）": "qwen-vl-max",
+    "Doubao-1.5-Vision-Pro（豆包视觉）": "doubao-1-5-vision-pro-32k-250115",
     "GLM-4.6V（智谱视觉）": "glm-4.6v",
+    "GLM-4.1V-Thinking（智谱·深度思考）": "glm-4.1v-thinking",
+}
+
+TEXT_MODELS = {
+    "qwen-max（通义千问·推荐）": "qwen-max",
+    "DeepSeek-V3（深度求索·高精度）": "deepseek-v4-pro",
+    "DeepSeek-R1（链式推理·最准）": "deepseek-reasoner",
+    "GLM-4-Flash（智谱·快速免费）": "glm-4-flash",
 }
 
 icon_title("assets/icons/批量分析.svg", "题库管理")
@@ -123,8 +132,14 @@ with tab1:
                 st.rerun()
 
     else:
-        ocr_label = st.selectbox("识别模型", list(VISION_MODELS.keys()), key="qb_ocr_model")
-        OCR_MODEL = VISION_MODELS[ocr_label]
+        st.info("📌 两步识别：第①步视觉模型只读取文字，第②步文字模型负责理解配对，准确率更高")
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            ocr_label = st.selectbox("① 视觉模型（读文字）", list(VISION_MODELS.keys()), key="qb_ocr_model")
+            OCR_MODEL = VISION_MODELS[ocr_label]
+        with col_m2:
+            txt_label = st.selectbox("② 文字模型（配对整理）", list(TEXT_MODELS.keys()), key="qb_txt_model")
+            TXT_MODEL = TEXT_MODELS[txt_label]
 
         ocr_mode = st.radio(
             "图片模式",
@@ -138,83 +153,98 @@ with tab1:
             import io
             img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
             w, h = img.size
-            if max(w, h) > 1600:
-                ratio = 1600 / max(w, h)
+            if max(w, h) > 2000:
+                ratio = 2000 / max(w, h)
                 img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
             buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=82)
+            img.save(buf, format="JPEG", quality=88)
             return base64.b64encode(buf.getvalue()).decode(), "image/jpeg"
 
-        def _build_single_prompt(n):
-            pages = "、".join([f"图{i+1}" for i in range(n)])
-            return f"""以下{n}张图片（{pages}）是同一份试卷的连续页面，学科：{subject}。
-请识别所有题目、参考答案和评分细则，跨页内容请合并。
+        OCR_PROMPT = "请将图片中所有文字原样识别输出，不要遗漏任何内容，包括题号、题目、选项、答案、评分说明等。保持原始排版顺序。"
 
-严格输出JSON数组：
+        def _do_ocr_single(files):
+            """对每张图分别 OCR，返回拼接后的原始文字。"""
+            texts = []
+            for i, f in enumerate(files):
+                b64, mime = _compress(f.read())
+                t = chat_with_image(image_b64=b64, mime_type=mime,
+                                    model=OCR_MODEL, prompt=OCR_PROMPT)
+                texts.append(f"--- 第{i+1}页 ---\n{t.strip()}")
+            return "\n\n".join(texts)
+
+        def _structure_single(raw_text):
+            """文字模型从同页原始文字中提取结构化 Q&A。"""
+            sys_p = "你是题目整理助手，严格输出合法JSON，不输出任何其他文字。"
+            usr_p = f"""以下是试卷的原始识别文字（学科：{subject}）：
+
+{raw_text}
+
+请从中提取所有题目和对应答案，整理成JSON数组。若同一题目有多个小问，合并为一条。
 [
   {{
-    "题目": "完整题目内容",
+    "题目": "完整题目内容（含题号、题干、选项）",
     "答案": "参考答案和解析过程",
     "评分细则": [{{"criterion": "得分点描述", "points": 分值}}],
     "总分": 整数
   }}
 ]
+若没有评分细则，"评分细则"填[]，"总分"填0。只输出JSON数组。"""
+            return chat(model=TXT_MODEL, system=sys_p, user=usr_p, temperature=0.1)
 
-若没有明确评分细则，"评分细则"填[]，"总分"填0。只输出JSON。"""
+        def _structure_dual(q_text, a_text):
+            """文字模型将题目页文字和答案页文字按题号配对。"""
+            sys_p = "你是题目整理助手，严格输出合法JSON，不输出任何其他文字。"
+            usr_p = f"""学科：{subject}。以下是分别从题目页和答案页识别的原始文字，请按题号一一配对整理。
 
-        def _build_dual_prompt(nq, na):
-            q_pages = "、".join([f"图{i+1}" for i in range(nq)])
-            a_pages = "、".join([f"图{nq+i+1}" for i in range(na)])
-            return f"""学科：{subject}。
-图片说明：
-- 题目页：{q_pages}（共{nq}张，按顺序为试卷题目）
-- 答案页：{a_pages}（共{na}张，按顺序为参考答案）
+【题目页原始文字】
+{q_text}
 
-请完成：
-1. 从题目页识别所有题目（含题号、完整题干和选项），跨页内容合并
-2. 从答案页识别对应答案和评分细则，跨页内容合并
-3. 按题号将题目与答案一一配对
+【答案页原始文字】
+{a_text}
 
-严格输出JSON数组：
+请将题目与答案配对，输出JSON数组：
 [
   {{
-    "题目": "完整题目内容",
+    "题目": "完整题目内容（含题号、题干、选项）",
     "答案": "参考答案和解析过程",
     "评分细则": [{{"criterion": "得分点描述", "points": 分值}}],
     "总分": 整数
   }}
 ]
+若答案页没有评分细则，"评分细则"填[]，"总分"填0。只输出JSON数组。"""
+            return chat(model=TXT_MODEL, system=sys_p, user=usr_p, temperature=0.1)
 
-若答案页没有明确评分细则，"评分细则"填[]，"总分"填0。只输出JSON。"""
+        def _parse_items(raw):
+            raw = raw.strip()
+            m = __import__("re").search(r"\[[\s\S]*\]", raw)
+            return json.loads(m.group() if m else raw)
 
-        # ── 同页模式（支持多张）──────────────────────────
+        # ── 同页模式 ──────────────────────────────────────
         if ocr_mode == "📄 题目答案同页（可多张）":
-            st.caption("题目和答案在同一页面，可一次上传多张（如试卷第1页、第2页）")
+            st.caption("题目和答案在同一页，可一次上传多张（如试卷第1页、第2页）")
             files = st.file_uploader("上传图片（可多选）", type=["jpg", "jpeg", "png"],
                                      key="qb_img", accept_multiple_files=True)
-
             if files:
                 cols = st.columns(min(len(files), 3))
                 for i, f in enumerate(files):
                     cols[i % 3].image(f.read(), use_container_width=True)
                     f.seek(0)
 
-                if st.button("🔍 OCR识别题目、答案和评分细则", type="primary", key="btn_qb_ocr"):
-                    with st.spinner(f"正在识别 {len(files)} 张图片…"):
-                        try:
-                            images = [{"b64": b, "mime": m}
-                                      for b, m in (_compress(f.read()) for f in files)]
-                            prompt = _build_single_prompt(len(images))
-                            raw = chat_with_images(images=images, model=OCR_MODEL, prompt=prompt)
-                            raw = raw.strip()
-                            match = __import__("re").search(r"\[[\s\S]*\]", raw)
-                            items = json.loads(match.group() if match else raw)
-                            st.session_state["qb_ocr_items"] = items
-                            st.success(f"识别完成，共 {len(items)} 道题，请确认后录入")
-                        except Exception as e:
-                            st.error(f"识别失败：{e}")
+                if st.button("🔍 开始识别", type="primary", key="btn_qb_ocr"):
+                    try:
+                        prog = st.progress(0, text="第①步：视觉模型读取文字…")
+                        raw_text = _do_ocr_single(files)
+                        prog.progress(60, text="第②步：文字模型整理题目与答案…")
+                        raw_json = _structure_single(raw_text)
+                        prog.progress(95, text="解析结果…")
+                        items = _parse_items(raw_json)
+                        prog.empty()
+                        st.session_state["qb_ocr_items"] = items
+                        st.success(f"识别完成，共 {len(items)} 道题，请确认后录入")
+                    except Exception as e:
+                        st.error(f"识别失败：{e}")
 
-        # ── 分页模式（题目页+答案页各可多张）────────────
+        # ── 分页模式 ──────────────────────────────────────
         else:
             st.caption("题目和答案分开，各自可上传多张（如题目2页 + 答案2页）")
             col_q, col_a = st.columns(2)
@@ -235,24 +265,22 @@ with tab1:
 
             if files_q and files_a:
                 st.caption(f"已上传：题目页 {len(files_q)} 张 · 答案页 {len(files_a)} 张")
-                if st.button("🔍 识别并配对题目与答案", type="primary", key="btn_qb_dual_ocr"):
-                    total_imgs = len(files_q) + len(files_a)
-                    with st.spinner(f"正在识别并配对 {total_imgs} 张图片，请稍候…"):
-                        try:
-                            imgs_q = [{"b64": b, "mime": m}
-                                      for b, m in (_compress(f.read()) for f in files_q)]
-                            imgs_a = [{"b64": b, "mime": m}
-                                      for b, m in (_compress(f.read()) for f in files_a)]
-                            images = imgs_q + imgs_a
-                            prompt = _build_dual_prompt(len(imgs_q), len(imgs_a))
-                            raw = chat_with_images(images=images, model=OCR_MODEL, prompt=prompt)
-                            raw = raw.strip()
-                            match = __import__("re").search(r"\[[\s\S]*\]", raw)
-                            items = json.loads(match.group() if match else raw)
-                            st.session_state["qb_ocr_items"] = items
-                            st.success(f"识别完成，共配对 {len(items)} 道题，请逐题确认后录入")
-                        except Exception as e:
-                            st.error(f"识别失败：{e}")
+                if st.button("🔍 开始识别并配对", type="primary", key="btn_qb_dual_ocr"):
+                    try:
+                        total = len(files_q) + len(files_a)
+                        prog = st.progress(0, text=f"第①步：识别题目页（共{len(files_q)}张）…")
+                        q_text = _do_ocr_single(files_q)
+                        prog.progress(40, text=f"第①步：识别答案页（共{len(files_a)}张）…")
+                        a_text = _do_ocr_single(files_a)
+                        prog.progress(70, text="第②步：文字模型按题号配对…")
+                        raw_json = _structure_dual(q_text, a_text)
+                        prog.progress(95, text="解析结果…")
+                        items = _parse_items(raw_json)
+                        prog.empty()
+                        st.session_state["qb_ocr_items"] = items
+                        st.success(f"配对完成，共 {len(items)} 道题，请逐题确认后录入")
+                    except Exception as e:
+                        st.error(f"识别失败：{e}")
 
         if st.session_state.get("qb_ocr_items"):
             items = st.session_state["qb_ocr_items"]
