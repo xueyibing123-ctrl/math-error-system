@@ -134,6 +134,13 @@ def _build_batch_ref(bank: dict) -> str:
     return ref
 
 
+ERROR_DESC = {
+    "A1": "抄写/转录错误", "A2": "解题过程错误", "A3": "基础知识薄弱",
+    "B1": "关键概念错误", "B2": "解题方法误判", "B3": "知识迁移失败",
+    "C1": "综合理解困难", "C2": "畏难放弃", "C3": "抽象思维不足",
+}
+
+
 def analyze_one(idx, question, steps, model, subject, student_id):
     """单题分析，用于并行调用。优先使用题库答案（含按点给分）。"""
     bank = search_question_bank(question, subject=subject)
@@ -150,6 +157,7 @@ def analyze_one(idx, question, steps, model, subject, student_id):
         is_wrong = data.get("答案是否有误", False)
         tags = data.get("错因标签", [])
         main_error = (tags[0] if isinstance(tags, list) and tags else "") if is_wrong else ""
+        error_label = f"{main_error}·{ERROR_DESC[main_error]}" if main_error and main_error in ERROR_DESC else main_error
 
         save_record(student_id, question, steps, main_error or "UNKNOWN", data.get("温和反馈", ""))
         if main_error:
@@ -164,14 +172,16 @@ def analyze_one(idx, question, steps, model, subject, student_id):
             full = data.get("满分", 0)
             scoring_str = f"{got}/{full}分"
 
-        批改结果 = "✅ 正确" if not is_wrong else f"❌ {main_error}"
+        批改结果 = "✅ 正确" if not is_wrong else f"❌ {error_label}"
 
         return idx, {
             "题号": idx + 1,
             "题目": question[:40] + "…" if len(question) > 40 else question,
+            "题目_全文": question,
             "步骤": steps[:30] + "…" if len(steps) > 30 else steps,
             "批改结果": 批改结果,
             "错因": main_error,
+            "错因描述": ERROR_DESC.get(main_error, ""),
             "题型": data.get("题型判断", "-"),
             "反馈": data.get("温和反馈", "-"),
             "得分": scoring_str,
@@ -183,6 +193,7 @@ def analyze_one(idx, question, steps, model, subject, student_id):
         return idx, {
             "题号": idx + 1,
             "题目": question[:40] + "…" if len(question) > 40 else question,
+            "题目_全文": question,
             "步骤": steps[:30] + "…" if len(steps) > 30 else steps,
             "批改结果": "⚠️ 失败",
             "错因": "", "题型": "-",
@@ -263,10 +274,12 @@ with st.expander("📷 拍照上传（自动识别题目和步骤）"):
 识别规则（按题型分类）：
 - 选择题：找学生圈选、填写或标注的选项字母（A/B/C/D），若空白写"未作答"
 - 填空题：找学生在括号()或横线上填写的内容，若空白写"未作答"
+- 比较大小/填符号题（如"在○里填上>、<或="）：仔细观察每个圆圈内学生写的符号，严格区分>（大于，开口朝左）和<（小于，开口朝右）和=，逐个读出每题的符号；若空白写"未作答"
 - 判断题：找学生写的√或×，若空白写"未作答"
 - 解答/应用题：找学生的计算过程和步骤，若空白写"未作答"
-- 钟表/画图题（如"在钟表上画出时刻""画一画"等）：观察学生在图上画的内容，用文字描述时针和分针的位置（如"时针指向6，分针指向12，表示6:00"），若图上没有画任何指针写"未作答"
-- 表格补全题（如"补充完整作息时间表"）：逐行读出学生在每个空格里填写的内容，格式为"第N格：[内容]"，若某格为空写"空白"
+- 钟表/画图题（如"在钟表上画出时刻""画一画"等）：仔细观察钟面上是否有学生手绘的指针线条，描述时针和分针各自指向的数字（如"时针指向6，分针指向12，表示6:00"），若钟面上看不到任何手绘指针写"未作答"
+- 时间轴标记题（如"用☆标出时刻"）：观察数轴上是否有学生标的符号（☆、×、点等），描述该符号在数轴上的大致位置（如"☆在6:30处"），若无任何标记写"未作答"
+- 表格补全题：逐行读出学生在每个空格里填写的内容，格式为"第N格：[内容]"，若某格为空写"空白"
 - 连线题：描述学生连了哪些线，若未连写"未作答"
 
 每道题严格按以下格式输出，题目之间用---分隔：
@@ -432,11 +445,15 @@ if st.session_state.get("batch_results"):
                 with col1:
                     score_badge = f" · **{r['得分']}**" if r.get("得分") else ""
                     if r.get("是否有误"):
-                        error_badge = f" · 错因：`{r['错因']}`" if r.get("错因") else ""
+                        code = r.get("错因", "")
+                        desc = r.get("错因描述", ERROR_DESC.get(code, ""))
+                        error_badge = f" · 错因：`{code}` {desc}" if code else ""
                         st.markdown(f"**第{r['题号']}题** ❌{error_badge}{score_badge}")
                     else:
                         st.markdown(f"**第{r['题号']}题** ✅{score_badge}")
-                    st.caption(r["题目"])
+                    # 展示完整题目
+                    full_q = r.get("题目_全文") or r.get("题目", "")
+                    st.markdown(f"> {full_q}")
                 with col2:
                     st.caption(r.get("题型", "-"))
                 breakdown = r.get("按点得分", [])
