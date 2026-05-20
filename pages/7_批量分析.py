@@ -119,6 +119,71 @@ def safe_json_loads(s: str):
     raise ValueError("JSON parse failed")
 
 
+import re as _re, random as _random
+
+_PRAISE = [
+    "答对了！思路很清晰，继续保持！",
+    "完全正确，做得很好！",
+    "对！这道题掌握得很扎实！",
+    "答对了，很棒！计算准确！",
+    "正确！很好地运用了所学知识！",
+]
+
+SHORT_ANALYSIS_SYSTEM = """你是作业批改助手。已知学生答案有误，正确答案已提供。只需分析错因并写温和反馈，不必重新判断对错。严格输出合法JSON，不输出其他文字。
+
+错因标签（选1个）：A1抄写错误/A2过程错误/A3基础薄弱/B1概念错误/B2方法误判/B3迁移失败/C1综合困难/C2畏难放弃/C3抽象不足
+
+输出格式：
+{"答案是否有误":true,"题型判断":"...","错因标签":["X"],"判断理由":["一句话说明"],"建议干预策略":["一句话"],"温和反馈":"苏格拉底式引导100-150字，不直接给答案"}""".strip()
+
+
+def _direct_compare(student_ans: str, correct_ans: str):
+    """
+    保守的直接比对。返回 True（对）/ False（错）/ None（无法确定，交给AI）。
+    只对把握十足的题型直判，主观题/解答题一律返回 None。
+    """
+    s = (student_ans or "").strip()
+    c = (correct_ans or "").strip()
+
+    if not s or s in ("未作答", "（未填写步骤）"):
+        return False  # 空白=错
+
+    def _norm(x):
+        x = _re.sub(r'\s+', '', x)
+        x = x.replace('分钟', '分').replace('秒钟', '秒').replace('小时', '时')
+        return x.upper()
+
+    sn, cn = _norm(s), _norm(c)
+
+    # 完全匹配（归一化后）
+    if sn == cn:
+        return True
+
+    # 选择题：学生答案是单个字母 A-D
+    if _re.fullmatch(r'[ABCD]', sn):
+        # 从正确答案里找最先出现的选项字母
+        m = _re.search(r'[ABCD]', cn[:20])  # 只看前20字，防止误匹配
+        if m:
+            return sn == m.group()
+        return None
+
+    # 判断题：学生答案是 √/× 或对/错
+    _pos = {'√', '✓', '对', '正确', 'T', 'TRUE', 'Y', 'YES'}
+    _neg = {'×', '✗', '错', '错误', 'F', 'FALSE', 'N', 'NO'}
+    if sn in _pos or sn in _neg:
+        s_pos = sn in _pos
+        c_pos = any(p in cn for p in _pos)
+        c_neg = any(n in cn for n in _neg)
+        if c_pos and not c_neg:
+            return s_pos
+        if c_neg and not c_pos:
+            return not s_pos
+        return None
+
+    # 其余（解答题/主观题）交给 AI
+    return None
+
+
 def _build_batch_ref(bank: dict) -> str:
     """构建题库参考注入文本（含评分细则）。"""
     ref = (f"\n\n【📚 题库参考答案（来源：{bank['source'] or '题库'}）】\n{bank['correct_answer']}\n"
@@ -142,17 +207,46 @@ ERROR_DESC = {
 
 
 def analyze_one(idx, question, steps, model, subject, student_id):
-    """单题分析，用于并行调用。优先使用题库答案（含按点给分）。"""
+    """单题分析。题库命中时优先直判，减少 AI 调用次数。"""
     bank = search_question_bank(question, subject=subject)
-    base = f"学科：{subject}\n\n题目：\n{question}\n\n学生作答：\n{steps}"
-    user_prompt = base + (_build_batch_ref(bank) if bank else "")
+    direct = _direct_compare(steps, bank["correct_answer"]) if bank else None
+
     try:
-        result_raw = chat(model=model, system=SYSTEM_PROMPT, user=user_prompt, temperature=0.2)
-        try:
-            data = safe_json_loads(result_raw)
-        except Exception:
-            result_raw = chat(model=model, system=SYSTEM_PROMPT, user=user_prompt, temperature=0.0)
-            data = safe_json_loads(result_raw)
+        if direct is True:
+            # ✅ 题库直判正确，0 次 AI 调用
+            data = {
+                "答案是否有误": False,
+                "题型判断": "客观题（题库直判）",
+                "错因标签": [], "判断理由": [], "建议干预策略": [],
+                "温和反馈": _random.choice(_PRAISE),
+            }
+        elif direct is False:
+            # ❌ 题库直判错误，只让 AI 分析错因+反馈，不再判断对错
+            user_prompt = (f"学科：{subject}\n题目：{question}\n"
+                           f"正确答案：{bank['correct_answer']}\n学生答案：{steps}")
+            if bank.get("scoring_criteria"):
+                user_prompt += "\n" + _build_batch_ref(bank)
+            try:
+                result_raw = chat(model=model, system=SHORT_ANALYSIS_SYSTEM,
+                                  user=user_prompt, temperature=0.2)
+                data = safe_json_loads(result_raw)
+            except Exception:
+                result_raw = chat(model=model, system=SHORT_ANALYSIS_SYSTEM,
+                                  user=user_prompt, temperature=0.0)
+                data = safe_json_loads(result_raw)
+            data["答案是否有误"] = True  # 确保字段正确
+        else:
+            # 题库未命中 or 主观题，全量 AI 推理
+            base = f"学科：{subject}\n\n题目：\n{question}\n\n学生作答：\n{steps}"
+            user_prompt = base + (_build_batch_ref(bank) if bank else "")
+            try:
+                result_raw = chat(model=model, system=SYSTEM_PROMPT,
+                                  user=user_prompt, temperature=0.2)
+                data = safe_json_loads(result_raw)
+            except Exception:
+                result_raw = chat(model=model, system=SYSTEM_PROMPT,
+                                  user=user_prompt, temperature=0.0)
+                data = safe_json_loads(result_raw)
 
         is_wrong = data.get("答案是否有误", False)
         tags = data.get("错因标签", [])
@@ -173,6 +267,7 @@ def analyze_one(idx, question, steps, model, subject, student_id):
             scoring_str = f"{got}/{full}分"
 
         批改结果 = "✅ 正确" if not is_wrong else f"❌ {error_label}"
+        来源标记 = ("📚直判" if direct is not None else ("📚+AI" if bank else "🤖AI"))
 
         return idx, {
             "题号": idx + 1,
@@ -180,6 +275,7 @@ def analyze_one(idx, question, steps, model, subject, student_id):
             "题目_全文": question,
             "步骤": steps[:30] + "…" if len(steps) > 30 else steps,
             "批改结果": 批改结果,
+            "来源": 来源标记,
             "错因": main_error,
             "错因描述": ERROR_DESC.get(main_error, ""),
             "题型": data.get("题型判断", "-"),
@@ -195,7 +291,7 @@ def analyze_one(idx, question, steps, model, subject, student_id):
             "题目": question[:40] + "…" if len(question) > 40 else question,
             "题目_全文": question,
             "步骤": steps[:30] + "…" if len(steps) > 30 else steps,
-            "批改结果": "⚠️ 失败",
+            "批改结果": "⚠️ 失败", "来源": "-",
             "错因": "", "题型": "-",
             "反馈": f"分析失败：{e}", "得分": "", "按点得分": [],
             "状态": "❌ 失败", "是否有误": False,
@@ -414,7 +510,7 @@ if st.session_state.get("batch_results"):
     mc3.metric("❌ 错误", f"{wrong_n} 题")
 
     st.subheader("📋 批改结果")
-    display_cols = [c for c in ["题号", "题目", "批改结果", "得分", "题型"] if c in df.columns]
+    display_cols = [c for c in ["题号", "题目", "批改结果", "来源", "得分", "题型"] if c in df.columns]
     st.dataframe(df[display_cols], use_container_width=True)
 
     # ── 错题分析（只统计错题）──────────────────────────

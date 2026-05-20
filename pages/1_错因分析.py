@@ -1,6 +1,8 @@
 import os
 import io
+import re as _re
 import json
+import random as _random
 import base64
 import streamlit as st
 from PIL import Image, ImageDraw
@@ -135,6 +137,54 @@ COMBINED_PROMPT = """你是一位经验丰富的作业批改助手，请完成�
 
 错因标签（仅答错时填写）：A1抄写/A2过程错/A3基础薄弱/B1概念错/B2方法误判/B3迁移失败/C1综合困难/C2畏难/C3抽象不足
 答案正确时：答案是否有误=false，错因标签/判断理由/建议干预策略均为[]"""
+
+
+_PRAISE = [
+    "答对了！思路很清晰，继续保持！",
+    "完全正确，做得很好！",
+    "对！这道题掌握得很扎实！",
+    "答对了，很棒！计算准确！",
+    "正确！很好地运用了所学知识！",
+]
+
+SHORT_ANALYSIS_SYSTEM = """你是作业批改助手。已知学生答案有误，正确答案已提供。只需分析错因并写温和反馈，不必重新判断对错。严格输出合法JSON，不输出其他文字。
+
+错因标签（选1个）：A1抄写错误/A2过程错误/A3基础薄弱/B1概念错误/B2方法误判/B3迁移失败/C1综合困难/C2畏难放弃/C3抽象不足
+
+输出格式：
+{"答案是否有误":true,"题型判断":"...","错因标签":["X"],"判断理由":["一句话说明"],"建议干预策略":["一句话"],"温和反馈":"苏格拉底式引导100-150字，不直接给答案"}""".strip()
+
+
+def _direct_compare(student_ans: str, correct_ans: str):
+    """保守直接比对。True=对 / False=错 / None=交AI。"""
+    s = (student_ans or "").strip()
+    c = (correct_ans or "").strip()
+    if not s or s in ("未作答", "（未填写步骤）"):
+        return False
+
+    def _norm(x):
+        x = _re.sub(r'\s+', '', x)
+        return x.replace('分钟', '分').replace('秒钟', '秒').replace('小时', '时').upper()
+
+    sn, cn = _norm(s), _norm(c)
+    if sn == cn:
+        return True
+    if _re.fullmatch(r'[ABCD]', sn):
+        m = _re.search(r'[ABCD]', cn[:20])
+        if m:
+            return sn == m.group()
+        return None
+    _pos = {'√', '✓', '对', '正确', 'T', 'TRUE'}
+    _neg = {'×', '✗', '错', '错误', 'F', 'FALSE'}
+    if sn in _pos or sn in _neg:
+        s_pos = sn in _pos
+        c_pos = any(p in cn for p in _pos)
+        c_neg = any(n in cn for n in _neg)
+        if c_pos and not c_neg:
+            return s_pos
+        if c_neg and not c_pos:
+            return not s_pos
+    return None
 
 
 def build_scoring_ref(bank: dict) -> str:
@@ -485,11 +535,31 @@ elif page_mode == "📷 拍照整页·双模型（OCR模型+分析模型，可�
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
             def _analyze(prob, idx):
-                base = f"学科：{SUBJECT}\n\n题目：\n{prob.get('题目','')}\n\n学生作答：\n{prob.get('学生答案','')}"
-                bank = search_question_bank(prob.get("题目", ""), subject=SUBJECT)
-                user_prompt = base + (build_scoring_ref(bank) if bank else "")
-                result_raw = chat(model=ANA_MODEL, system=TEXT_SYSTEM_PROMPT, user=user_prompt, temperature=0.2)
-                return idx, safe_json_loads(result_raw)
+                question = prob.get("题目", "")
+                student_ans = prob.get("学生答案", "")
+                bank = search_question_bank(question, subject=SUBJECT)
+                direct = _direct_compare(student_ans, bank["correct_answer"]) if bank else None
+
+                if direct is True:
+                    data = {"答案是否有误": False, "题型判断": "客观题（题库直判）",
+                            "错因标签": [], "判断理由": [], "建议干预策略": [],
+                            "温和反馈": _random.choice(_PRAISE)}
+                elif direct is False:
+                    user_prompt = (f"学科：{SUBJECT}\n题目：{question}\n"
+                                   f"正确答案：{bank['correct_answer']}\n学生答案：{student_ans}")
+                    if bank.get("scoring_criteria"):
+                        user_prompt += "\n" + build_scoring_ref(bank)
+                    result_raw = chat(model=ANA_MODEL, system=SHORT_ANALYSIS_SYSTEM,
+                                      user=user_prompt, temperature=0.2)
+                    data = safe_json_loads(result_raw)
+                    data["答案是否有误"] = True
+                else:
+                    base = f"学科：{SUBJECT}\n\n题目：\n{question}\n\n学生作答：\n{student_ans}"
+                    user_prompt = base + (build_scoring_ref(bank) if bank else "")
+                    result_raw = chat(model=ANA_MODEL, system=TEXT_SYSTEM_PROMPT,
+                                      user=user_prompt, temperature=0.2)
+                    data = safe_json_loads(result_raw)
+                return idx, data
 
             all_results = [None] * len(problems)
             wrong_nums = []
@@ -624,33 +694,51 @@ if st.button("开始分析", type="primary"):
     if not question.strip() or not student_answer.strip():
         st.warning("请填写完整信息")
     else:
-        user_prompt, hit, _ = build_user_prompt(SUBJECT, question.strip(), student_answer.strip())
-        if hit:
-            st.info("📚 已命中题库，使用题库答案作为评判标准")
+        bank = search_question_bank(question.strip(), subject=SUBJECT)
+        direct = _direct_compare(student_answer.strip(), bank["correct_answer"]) if bank else None
+
         with st.spinner("AI正在分析中..."):
             try:
-                result_raw = chat(model=MODEL, system=TEXT_SYSTEM_PROMPT, user=user_prompt, temperature=0.2)
-                try:
-                    data = safe_json_loads(result_raw)
-                except Exception:
-                    result_raw = chat(model=MODEL, system=TEXT_SYSTEM_PROMPT, user=user_prompt, temperature=0.0)
-                    data = safe_json_loads(result_raw)
+                if direct is True:
+                    st.info("📚 已命中题库，直接比对正确")
+                    data = {"答案是否有误": False, "题型判断": "客观题（题库直判）",
+                            "错因标签": [], "判断理由": [], "建议干预策略": [],
+                            "温和反馈": _random.choice(_PRAISE)}
+                elif direct is False:
+                    st.info("📚 已命中题库，答案有误，AI分析错因中…")
+                    user_prompt = (f"学科：{SUBJECT}\n题目：{question.strip()}\n"
+                                   f"正确答案：{bank['correct_answer']}\n学生答案：{student_answer.strip()}")
+                    if bank.get("scoring_criteria"):
+                        user_prompt += "\n" + build_scoring_ref(bank)
+                    try:
+                        result_raw = chat(model=MODEL, system=SHORT_ANALYSIS_SYSTEM, user=user_prompt, temperature=0.2)
+                        data = safe_json_loads(result_raw)
+                    except Exception:
+                        result_raw = chat(model=MODEL, system=SHORT_ANALYSIS_SYSTEM, user=user_prompt, temperature=0.0)
+                        data = safe_json_loads(result_raw)
+                    data["答案是否有误"] = True
+                else:
+                    if bank:
+                        st.info("📚 已命中题库（主观题），使用题库答案辅助判断")
+                    user_prompt, _, _ = build_user_prompt(SUBJECT, question.strip(), student_answer.strip())
+                    try:
+                        result_raw = chat(model=MODEL, system=TEXT_SYSTEM_PROMPT, user=user_prompt, temperature=0.2)
+                        data = safe_json_loads(result_raw)
+                    except Exception:
+                        result_raw = chat(model=MODEL, system=TEXT_SYSTEM_PROMPT, user=user_prompt, temperature=0.0)
+                        data = safe_json_loads(result_raw)
+
                 tags = data.get("错因标签", [])
                 is_wrong = data.get("答案是否有误", False)
                 main_error = (tags[0] if isinstance(tags, list) and tags else "UNKNOWN") if is_wrong else "UNKNOWN"
-                save_record(
-                    st.session_state.get("student_id", "unknown"),
-                    question.strip(), student_answer.strip(),
-                    main_error, data.get("温和反馈", "")
-                )
+                save_record(st.session_state.get("student_id", "unknown"),
+                            question.strip(), student_answer.strip(),
+                            main_error, data.get("温和反馈", ""))
                 error_count = count_same_error(main_error)
                 if main_error != "UNKNOWN" and error_count >= DRILL_THRESHOLD:
-                    upsert_alert(
-                        student_id=st.session_state.get("student_id"),
-                        error_code=main_error,
-                        error_count=error_count,
-                        threshold=DRILL_THRESHOLD
-                    )
+                    upsert_alert(student_id=st.session_state.get("student_id"),
+                                 error_code=main_error, error_count=error_count,
+                                 threshold=DRILL_THRESHOLD)
                 st.session_state.analysis_result = data
                 st.session_state.main_error = main_error
                 st.session_state.error_count = error_count
