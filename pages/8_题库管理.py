@@ -115,6 +115,8 @@ with tab1:
                                      placeholder="例：小明买了3本书，每本12元，一共花了多少钱？")
         correct_answer = st.text_area("参考答案（含解题过程）", height=100, key="qb_a",
                                       placeholder="例：12×3=36（元），答：一共花了36元。")
+        manual_img = st.file_uploader("题目图片（可选，上传后存为截图并建立图像指纹）",
+                                      type=["jpg", "jpeg", "png"], key="qb_manual_img")
 
         criteria, total_pts = criteria_editor("manual")
 
@@ -122,11 +124,13 @@ with tab1:
             if not question_text.strip() or not correct_answer.strip():
                 st.warning("题目和答案不能为空")
             else:
+                img_bytes = manual_img.read() if manual_img else None
                 add_question(subject, grade, source,
                              question_text.strip(), correct_answer.strip(),
                              total_points=total_pts,
                              scoring_criteria=criteria,
-                             uploaded_by=uploaded_by)
+                             uploaded_by=uploaded_by,
+                             image_bytes=img_bytes)
                 st.success(f"✅ 录入成功！{'（含 ' + str(len(criteria)) + ' 个评分细则，共 ' + str(total_pts) + ' 分）' if criteria else ''}")
                 st.session_state["manual_criteria"] = []
                 st.rerun()
@@ -279,6 +283,12 @@ with tab1:
                 if st.button("🔍 开始识别", type="primary", key="btn_qb_ocr"):
                     try:
                         n = len(files)
+                        # 预读所有图片字节，供 pHash 存储（第一张作为代表图）
+                        all_raw = [f.read() for f in files]
+                        for f in files:
+                            f.seek(0)
+                        st.session_state["qb_ocr_img_bytes"] = all_raw[0] if all_raw else None
+
                         prog = st.progress(0, text=f"第①步：并行识别 {n} 张图片…")
 
                         def _cb(done, total, _label):
@@ -325,6 +335,12 @@ with tab1:
                     try:
                         nq, na = len(files_q), len(files_a)
                         total_imgs = nq + na
+                        # 预读题目页第一张字节，作为代表图存储 pHash
+                        q_raw_bytes = [f.read() for f in files_q]
+                        for f in files_q:
+                            f.seek(0)
+                        st.session_state["qb_ocr_img_bytes"] = q_raw_bytes[0] if q_raw_bytes else None
+
                         prog = st.progress(0, text=f"第①步：并行识别全部 {total_imgs} 张图片…")
                         done_count = [0]
 
@@ -401,6 +417,8 @@ with tab1:
             st.divider()
             if st.button("✅ 全部录入题库", type="primary", key="btn_ocr_import"):
                 ok = 0
+                # 使用 OCR 时保存的代表图（题目页第一张）为所有题建立图像指纹
+                ocr_img_bytes = st.session_state.get("qb_ocr_img_bytes")
                 for item in items:
                     q = item.get("题目", "").strip()
                     a = item.get("答案", "").strip()
@@ -408,10 +426,12 @@ with tab1:
                         add_question(subject, grade, source, q, a,
                                      total_points=item.get("总分", 0),
                                      scoring_criteria=item.get("评分细则", []),
-                                     uploaded_by=uploaded_by)
+                                     uploaded_by=uploaded_by,
+                                     image_bytes=ocr_img_bytes)
                         ok += 1
-                st.success(f"✅ 成功录入 {ok} 道题目！")
+                st.success(f"✅ 成功录入 {ok} 道题目！{'（含图像指纹）' if ocr_img_bytes else ''}")
                 st.session_state["qb_ocr_items"] = None
+                st.session_state.pop("qb_ocr_img_bytes", None)
                 st.rerun()
 
 # ══════════════════════════════════════════════════════
@@ -443,6 +463,15 @@ with tab2:
                         f"<span style='color:#9CA3C0;font-size:0.8rem;'>· {str(q['created_at'])[:10]}</span>",
                         unsafe_allow_html=True)
                     with st.expander("查看题目、答案与评分细则"):
+                        if q.get("image_data"):
+                            try:
+                                img_col, _ = st.columns([1, 2])
+                                img_col.image(
+                                    base64.b64decode(q["image_data"]),
+                                    caption="题目截图", use_container_width=True
+                                )
+                            except Exception:
+                                pass
                         st.markdown(f"**📝 题目：**\n\n{q['question_text']}")
                         st.markdown(f"**✅ 答案：**\n\n{q['correct_answer']}")
                         try:

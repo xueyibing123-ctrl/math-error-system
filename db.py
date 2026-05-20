@@ -307,9 +307,11 @@ def init_question_bank():
             created_at TIMESTAMP DEFAULT NOW()
         )
     """)
-    # 兼容旧表：按点给分字段
+    # 兼容旧表：按需补列
     for col, defn in [("total_points", "INT DEFAULT 0"),
-                      ("scoring_criteria", "TEXT DEFAULT '[]'")]:
+                      ("scoring_criteria", "TEXT DEFAULT '[]'"),
+                      ("image_data", "TEXT DEFAULT NULL"),
+                      ("image_hash", "TEXT DEFAULT NULL")]:
         try:
             cur.execute(f"ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS {col} {defn}")
         except Exception:
@@ -319,22 +321,56 @@ def init_question_bank():
     conn.close()
 
 
+def _compress_image_for_storage(image_bytes, max_width=400):
+    """压缩图片到指定宽度，返回 base64 字符串，失败返回 None。"""
+    try:
+        from PIL import Image
+        import io, base64 as _b64
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        w, h = img.size
+        if w > max_width:
+            img = img.resize((max_width, int(h * max_width / w)), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=80)
+        return _b64.b64encode(buf.getvalue()).decode()
+    except Exception:
+        return None
+
+
+def _compute_phash(image_bytes):
+    """计算图片 pHash 指纹，返回 hex 字符串，失败返回 None。"""
+    try:
+        import imagehash
+        from PIL import Image
+        import io
+        img = Image.open(io.BytesIO(image_bytes))
+        return str(imagehash.phash(img))
+    except Exception:
+        return None
+
+
 def add_question(subject, grade, source, question_text, correct_answer,
-                 total_points=0, scoring_criteria=None, uploaded_by=""):
+                 total_points=0, scoring_criteria=None, uploaded_by="",
+                 image_bytes=None):
     """
     scoring_criteria: list of {"criterion": str, "points": int}
+    image_bytes: raw bytes of the question image (optional); will be compressed and hashed.
     """
     import json
     criteria_json = json.dumps(scoring_criteria or [], ensure_ascii=False)
+    image_data = _compress_image_for_storage(image_bytes) if image_bytes else None
+    image_hash = _compute_phash(image_bytes) if image_bytes else None
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
         INSERT INTO question_bank
             (subject, grade, source, question_text, correct_answer,
-             total_points, scoring_criteria, uploaded_by, created_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+             total_points, scoring_criteria, uploaded_by, created_at,
+             image_data, image_hash)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
     """, (subject, grade, source, question_text, correct_answer,
-          total_points, criteria_json, uploaded_by, datetime.now()))
+          total_points, criteria_json, uploaded_by, datetime.now(),
+          image_data, image_hash))
     row = cur.fetchone()
     conn.commit()
     cur.close()
@@ -342,39 +378,71 @@ def add_question(subject, grade, source, question_text, correct_answer,
     return row["id"] if row else None
 
 
-def search_question_bank(question_text: str, subject: str = None, threshold: float = 0.65):
+def search_question_bank(question_text: str, subject: str = None,
+                         threshold: float = 0.65, image_bytes=None):
     """
     在题库中检索最相似的题目。
+    - 文字模糊匹配（difflib）为主；
+    - 若提供 image_bytes 且题库条目有 pHash，则加入图像指纹得分。
     返回 {'question_text','correct_answer','source','similarity',
            'total_points','scoring_criteria'} 或 None。
     """
     import json
     from difflib import SequenceMatcher
+
+    # 计算查询图片的 pHash（若提供）
+    query_phash = None
+    if image_bytes:
+        try:
+            import imagehash
+            from PIL import Image
+            import io
+            query_phash = imagehash.phash(Image.open(io.BytesIO(image_bytes)))
+        except Exception:
+            pass
+
     conn = get_conn()
     cur = conn.cursor()
     if subject:
         cur.execute(
-            "SELECT id, question_text, correct_answer, source, total_points, scoring_criteria "
-            "FROM question_bank WHERE subject=%s", (subject,)
+            "SELECT id, question_text, correct_answer, source, total_points, "
+            "scoring_criteria, image_hash FROM question_bank WHERE subject=%s", (subject,)
         )
     else:
         cur.execute(
-            "SELECT id, question_text, correct_answer, source, total_points, scoring_criteria "
-            "FROM question_bank"
+            "SELECT id, question_text, correct_answer, source, total_points, "
+            "scoring_criteria, image_hash FROM question_bank"
         )
     rows = cur.fetchall()
     cur.close()
     conn.close()
     if not rows:
         return None
+
     q_norm = question_text.replace(" ", "").replace("\n", "")
     best, best_score = None, 0.0
     for row in rows:
         db_norm = row["question_text"].replace(" ", "").replace("\n", "")
-        score = SequenceMatcher(None, q_norm, db_norm).ratio()
-        if score > best_score:
-            best_score = score
+        text_score = SequenceMatcher(None, q_norm, db_norm).ratio()
+
+        # pHash 得分：汉明距离 ≤ 10 视为同一题，距离每增加 1 扣 0.05
+        phash_score = 0.0
+        if query_phash and row.get("image_hash"):
+            try:
+                import imagehash
+                db_phash = imagehash.hex_to_hash(row["image_hash"])
+                dist = query_phash - db_phash  # hamming distance (0–64)
+                phash_score = max(0.0, 1.0 - dist / 20.0)
+            except Exception:
+                pass
+
+        # 加权融合：有 pHash 时 7:3，否则纯文字
+        combined = text_score * 0.7 + phash_score * 0.3 if phash_score > 0 else text_score
+
+        if combined > best_score:
+            best_score = combined
             best = row
+
     if best_score >= threshold:
         try:
             criteria = json.loads(best["scoring_criteria"] or "[]")
@@ -395,7 +463,8 @@ def get_all_questions(subject=None, keyword=None, limit=200):
     conn = get_conn()
     cur = conn.cursor()
     sql = ("SELECT id, subject, grade, source, question_text, correct_answer, "
-           "total_points, scoring_criteria, uploaded_by, created_at "
+           "total_points, scoring_criteria, uploaded_by, created_at, "
+           "image_data, image_hash "
            "FROM question_bank WHERE 1=1")
     params = []
     if subject:
