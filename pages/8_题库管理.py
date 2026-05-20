@@ -370,18 +370,15 @@ with tab1:
                         st.session_state["qb_ocr_img_bytes"] = q_raw[0] if q_raw else None
 
                         prog = st.progress(0, text=f"第①步：并行识别全部 {total_imgs} 张图片…")
-                        done_count = [0]
 
-                        def _cb(done, total, label):
-                            done_count[0] += 1
-                            pct = int(done_count[0] / total_imgs * 60)
-                            prog.progress(pct, text=f"第①步：{label}已完成 {done}/{total} 张（共{total_imgs}张）…")
-
-                        from concurrent.futures import ThreadPoolExecutor, as_completed as _ac
+                        # 双线程 OCR，不传 progress_cb（后台线程不能调 Streamlit UI）
+                        from concurrent.futures import ThreadPoolExecutor
                         with ThreadPoolExecutor(max_workers=2) as ex:
-                            fq = ex.submit(_do_ocr_single, q_raw, "题目页", _cb)
-                            fa = ex.submit(_do_ocr_single, a_raw, "答案页", _cb)
+                            fq = ex.submit(_do_ocr_single, q_raw, "题目页")
+                            fa = ex.submit(_do_ocr_single, a_raw, "答案页")
+                            prog.progress(30, text="第①步：正在识别题目页…")
                             q_text = fq.result()
+                            prog.progress(60, text="第①步：正在识别答案页…")
                             a_text = fa.result()
 
                         prog.progress(65, text="第②步：文字模型按题号配对…")
