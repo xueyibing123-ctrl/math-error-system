@@ -128,8 +128,8 @@ with tab1:
 
         ocr_mode = st.radio(
             "图片模式",
-            ["📄 单图（题目与答案在同一张图）",
-             "📄+📄 双图（题目页 + 答案页分开）"],
+            ["📄 题目答案同页（可多张）",
+             "📄+📄 题目页 + 答案页分开（各可多张）"],
             horizontal=True, key="qb_ocr_mode"
         )
 
@@ -145,57 +145,67 @@ with tab1:
             img.save(buf, format="JPEG", quality=82)
             return base64.b64encode(buf.getvalue()).decode(), "image/jpeg"
 
-        _SINGLE_PROMPT = f"""识别图片中所有题目、参考答案和评分细则。学科：{subject}。
+        def _build_single_prompt(n):
+            pages = "、".join([f"图{i+1}" for i in range(n)])
+            return f"""以下{n}张图片（{pages}）是同一份试卷的连续页面，学科：{subject}。
+请识别所有题目、参考答案和评分细则，跨页内容请合并。
 
 严格输出JSON数组：
 [
   {{
     "题目": "完整题目内容",
     "答案": "参考答案和解析过程",
-    "评分细则": [
-      {{"criterion": "得分点描述", "points": 分值}}
-    ],
+    "评分细则": [{{"criterion": "得分点描述", "points": 分值}}],
     "总分": 整数
   }}
 ]
 
 若没有明确评分细则，"评分细则"填[]，"总分"填0。只输出JSON。"""
 
-        _DUAL_PROMPT = f"""图一是题目页，图二是答案页。学科：{subject}。
+        def _build_dual_prompt(nq, na):
+            q_pages = "、".join([f"图{i+1}" for i in range(nq)])
+            a_pages = "、".join([f"图{nq+i+1}" for i in range(na)])
+            return f"""学科：{subject}。
+图片说明：
+- 题目页：{q_pages}（共{nq}张，按顺序为试卷题目）
+- 答案页：{a_pages}（共{na}张，按顺序为参考答案）
 
-请完成以下工作：
-1. 从图一识别所有题目（含题号、完整题干和选项）
-2. 从图二识别对应答案和评分细则
+请完成：
+1. 从题目页识别所有题目（含题号、完整题干和选项），跨页内容合并
+2. 从答案页识别对应答案和评分细则，跨页内容合并
 3. 按题号将题目与答案一一配对
 
 严格输出JSON数组：
 [
   {{
-    "题目": "完整题目内容（来自图一）",
-    "答案": "参考答案和解析过程（来自图二）",
-    "评分细则": [
-      {{"criterion": "得分点描述", "points": 分值}}
-    ],
+    "题目": "完整题目内容",
+    "答案": "参考答案和解析过程",
+    "评分细则": [{{"criterion": "得分点描述", "points": 分值}}],
     "总分": 整数
   }}
 ]
 
 若答案页没有明确评分细则，"评分细则"填[]，"总分"填0。只输出JSON。"""
 
-        # ── 单图模式 ──────────────────────────────────────
-        if ocr_mode == "📄 单图（题目与答案在同一张图）":
-            uploaded_file = st.file_uploader("上传图片（JPG/PNG）", type=["jpg", "jpeg", "png"], key="qb_img")
+        # ── 同页模式（支持多张）──────────────────────────
+        if ocr_mode == "📄 题目答案同页（可多张）":
+            st.caption("题目和答案在同一页面，可一次上传多张（如试卷第1页、第2页）")
+            files = st.file_uploader("上传图片（可多选）", type=["jpg", "jpeg", "png"],
+                                     key="qb_img", accept_multiple_files=True)
 
-            if uploaded_file:
-                img_bytes = uploaded_file.read()
-                st.image(img_bytes, use_container_width=True)
+            if files:
+                cols = st.columns(min(len(files), 3))
+                for i, f in enumerate(files):
+                    cols[i % 3].image(f.read(), use_container_width=True)
+                    f.seek(0)
 
                 if st.button("🔍 OCR识别题目、答案和评分细则", type="primary", key="btn_qb_ocr"):
-                    with st.spinner("正在识别…"):
+                    with st.spinner(f"正在识别 {len(files)} 张图片…"):
                         try:
-                            img_b64, mime = _compress(img_bytes)
-                            raw = chat_with_image(image_b64=img_b64, mime_type=mime,
-                                                  model=OCR_MODEL, prompt=_SINGLE_PROMPT)
+                            images = [{"b64": b, "mime": m}
+                                      for b, m in (_compress(f.read()) for f in files)]
+                            prompt = _build_single_prompt(len(images))
+                            raw = chat_with_images(images=images, model=OCR_MODEL, prompt=prompt)
                             raw = raw.strip()
                             match = __import__("re").search(r"\[[\s\S]*\]", raw)
                             items = json.loads(match.group() if match else raw)
@@ -204,30 +214,38 @@ with tab1:
                         except Exception as e:
                             st.error(f"识别失败：{e}")
 
-        # ── 双图模式 ──────────────────────────────────────
+        # ── 分页模式（题目页+答案页各可多张）────────────
         else:
-            st.caption("分别上传题目页和答案页，AI 自动按题号配对合并")
+            st.caption("题目和答案分开，各自可上传多张（如题目2页 + 答案2页）")
             col_q, col_a = st.columns(2)
             with col_q:
-                file_q = st.file_uploader("📄 题目页图片", type=["jpg", "jpeg", "png"], key="qb_img_q")
-                if file_q:
-                    st.image(file_q.read(), use_container_width=True)
-                    file_q.seek(0)
+                files_q = st.file_uploader("📄 题目页（可多选）", type=["jpg", "jpeg", "png"],
+                                           key="qb_img_q", accept_multiple_files=True)
+                if files_q:
+                    for f in files_q:
+                        st.image(f.read(), use_container_width=True)
+                        f.seek(0)
             with col_a:
-                file_a = st.file_uploader("📄 答案页图片", type=["jpg", "jpeg", "png"], key="qb_img_a")
-                if file_a:
-                    st.image(file_a.read(), use_container_width=True)
-                    file_a.seek(0)
+                files_a = st.file_uploader("📄 答案页（可多选）", type=["jpg", "jpeg", "png"],
+                                           key="qb_img_a", accept_multiple_files=True)
+                if files_a:
+                    for f in files_a:
+                        st.image(f.read(), use_container_width=True)
+                        f.seek(0)
 
-            if file_q and file_a:
-                if st.button("🔍 双图识别并配对题目与答案", type="primary", key="btn_qb_dual_ocr"):
-                    with st.spinner("正在识别并配对，请稍候（两张图，可能需要30秒）…"):
+            if files_q and files_a:
+                st.caption(f"已上传：题目页 {len(files_q)} 张 · 答案页 {len(files_a)} 张")
+                if st.button("🔍 识别并配对题目与答案", type="primary", key="btn_qb_dual_ocr"):
+                    total_imgs = len(files_q) + len(files_a)
+                    with st.spinner(f"正在识别并配对 {total_imgs} 张图片，请稍候…"):
                         try:
-                            b64_q, mime_q = _compress(file_q.read())
-                            b64_a, mime_a = _compress(file_a.read())
-                            images = [{"b64": b64_q, "mime": mime_q},
-                                      {"b64": b64_a, "mime": mime_a}]
-                            raw = chat_with_images(images=images, model=OCR_MODEL, prompt=_DUAL_PROMPT)
+                            imgs_q = [{"b64": b, "mime": m}
+                                      for b, m in (_compress(f.read()) for f in files_q)]
+                            imgs_a = [{"b64": b, "mime": m}
+                                      for b, m in (_compress(f.read()) for f in files_a)]
+                            images = imgs_q + imgs_a
+                            prompt = _build_dual_prompt(len(imgs_q), len(imgs_a))
+                            raw = chat_with_images(images=images, model=OCR_MODEL, prompt=prompt)
                             raw = raw.strip()
                             match = __import__("re").search(r"\[[\s\S]*\]", raw)
                             items = json.loads(match.group() if match else raw)
