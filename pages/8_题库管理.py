@@ -49,7 +49,9 @@ total = count_questions()
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("题库总量", f"{total} 题")
 col2.metric("支持功能", "按点给分")
-col3.metric("检索方式", "向量+文字+图像")
+with col3:
+    st.markdown("**检索方式**")
+    st.markdown("语义向量 · 文字匹配 · 图像指纹")
 with col4:
     if st.button("⚡ 补全题目向量", help="为尚未生成语义向量的题目批量生成，提升检索准确率"):
         try:
