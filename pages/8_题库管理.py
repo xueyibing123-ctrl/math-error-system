@@ -49,7 +49,7 @@ total = count_questions()
 col1, col2, col3 = st.columns(3)
 col1.metric("题库总量", f"{total} 题")
 col2.metric("支持功能", "按点给分")
-col3.metric("检索方式", "模糊匹配")
+col3.metric("检索方式", "智能检索")
 
 st.divider()
 

@@ -342,7 +342,7 @@ def add_question(subject, grade, source, question_text, correct_answer,
     return row["id"] if row else None
 
 
-def search_question_bank(question_text: str, subject: str = None, threshold: float = 0.55):
+def search_question_bank(question_text: str, subject: str = None, threshold: float = 0.75):
     """
     在题库中检索最相似的题目。
     返回 {'question_text','correct_answer','source','similarity',
