@@ -152,3 +152,50 @@ def chat_with_image(image_b64: str, mime_type: str, prompt: str, model="qwen-vl-
         raise
     except Exception as e:
         raise RuntimeError(f"详细错误：\n{traceback.format_exc()}") from e
+
+
+def chat_with_images(images: list, prompt: str, model="qwen-vl-max", temperature=0.1):
+    """
+    多图输入视觉模型调用。
+    images: [{"b64": "...", "mime": "image/jpeg"}, ...]
+    GLM 系列自动将 JPEG 转 PNG。
+    """
+    provider = _get_provider(model)
+    api_key = os.getenv(provider["api_key_env"])
+    if not api_key:
+        raise RuntimeError(f"未检测到 {provider['api_key_env']}，请在 Streamlit Secrets 中配置")
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
+    is_zhipu = model.lower().startswith("glm")
+
+    content = []
+    for img in images:
+        b64, mime = img["b64"], img["mime"]
+        if is_zhipu and mime in ("image/jpeg", "image/jpg"):
+            try:
+                from PIL import Image as _Img
+                import io as _io, base64 as _b64mod
+                pil = _Img.open(_io.BytesIO(_b64mod.b64decode(b64)))
+                buf = _io.BytesIO()
+                pil.save(buf, format="PNG")
+                b64 = _b64mod.b64encode(buf.getvalue()).decode()
+                mime = "image/png"
+            except Exception:
+                pass
+        content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+    content.append({"type": "text", "text": prompt})
+
+    payload = {
+        "model": model,
+        "temperature": temperature,
+        "messages": [{"role": "user", "content": content}],
+    }
+    try:
+        with httpx.Client(timeout=240) as client:
+            resp = client.post(provider["base_url"], headers=headers, json=payload)
+        _raise_with_body(resp)
+        return resp.json()["choices"][0]["message"]["content"]
+    except RuntimeError:
+        raise
+    except Exception as e:
+        raise RuntimeError(f"详细错误：\n{traceback.format_exc()}") from e

@@ -5,7 +5,7 @@ import streamlit as st
 from dotenv import load_dotenv
 from db import (init_question_bank, add_question, get_all_questions,
                 delete_question, count_questions)
-from llm_client import chat_with_image
+from llm_client import chat_with_image, chat_with_images
 from ui import icon_title
 
 load_dotenv()
@@ -125,27 +125,27 @@ with tab1:
     else:
         ocr_label = st.selectbox("识别模型", list(VISION_MODELS.keys()), key="qb_ocr_model")
         OCR_MODEL = VISION_MODELS[ocr_label]
-        uploaded_file = st.file_uploader("上传图片（JPG/PNG）", type=["jpg", "jpeg", "png"], key="qb_img")
 
-        if uploaded_file:
-            img_bytes = uploaded_file.read()
-            st.image(img_bytes, use_container_width=True)
+        ocr_mode = st.radio(
+            "图片模式",
+            ["📄 单图（题目与答案在同一张图）",
+             "📄+📄 双图（题目页 + 答案页分开）"],
+            horizontal=True, key="qb_ocr_mode"
+        )
 
-            if st.button("🔍 OCR识别题目、答案和评分细则", type="primary", key="btn_qb_ocr"):
-                from PIL import Image
-                import io
-                img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-                w, h = img.size
-                if max(w, h) > 1600:
-                    ratio = 1600 / max(w, h)
-                    img = img.resize((int(w*ratio), int(h*ratio)), Image.LANCZOS)
-                buf = io.BytesIO()
-                img.save(buf, format="JPEG", quality=82)
-                img_b64 = base64.b64encode(buf.getvalue()).decode()
+        def _compress(raw_bytes):
+            from PIL import Image
+            import io
+            img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+            w, h = img.size
+            if max(w, h) > 1600:
+                ratio = 1600 / max(w, h)
+                img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=82)
+            return base64.b64encode(buf.getvalue()).decode(), "image/jpeg"
 
-                with st.spinner("正在识别…"):
-                    try:
-                        prompt = f"""识别图片中所有题目、参考答案和评分细则。学科：{subject}。
+        _SINGLE_PROMPT = f"""识别图片中所有题目、参考答案和评分细则。学科：{subject}。
 
 严格输出JSON数组：
 [
@@ -153,23 +153,88 @@ with tab1:
     "题目": "完整题目内容",
     "答案": "参考答案和解析过程",
     "评分细则": [
-      {{"criterion": "得分点描述", "points": 分值}},
       {{"criterion": "得分点描述", "points": 分值}}
     ],
     "总分": 整数
   }}
 ]
 
-若图片中没有明确评分细则，"评分细则"填[]，"总分"填0。只输出JSON。"""
-                        raw = chat_with_image(image_b64=img_b64, mime_type="image/jpeg",
-                                              model=OCR_MODEL, prompt=prompt)
-                        raw = raw.strip()
-                        match = __import__("re").search(r"\[[\s\S]*\]", raw)
-                        items = json.loads(match.group() if match else raw)
-                        st.session_state["qb_ocr_items"] = items
-                        st.success(f"识别完成，共 {len(items)} 道题，请确认后录入")
-                    except Exception as e:
-                        st.error(f"识别失败：{e}")
+若没有明确评分细则，"评分细则"填[]，"总分"填0。只输出JSON。"""
+
+        _DUAL_PROMPT = f"""图一是题目页，图二是答案页。学科：{subject}。
+
+请完成以下工作：
+1. 从图一识别所有题目（含题号、完整题干和选项）
+2. 从图二识别对应答案和评分细则
+3. 按题号将题目与答案一一配对
+
+严格输出JSON数组：
+[
+  {{
+    "题目": "完整题目内容（来自图一）",
+    "答案": "参考答案和解析过程（来自图二）",
+    "评分细则": [
+      {{"criterion": "得分点描述", "points": 分值}}
+    ],
+    "总分": 整数
+  }}
+]
+
+若答案页没有明确评分细则，"评分细则"填[]，"总分"填0。只输出JSON。"""
+
+        # ── 单图模式 ──────────────────────────────────────
+        if ocr_mode == "📄 单图（题目与答案在同一张图）":
+            uploaded_file = st.file_uploader("上传图片（JPG/PNG）", type=["jpg", "jpeg", "png"], key="qb_img")
+
+            if uploaded_file:
+                img_bytes = uploaded_file.read()
+                st.image(img_bytes, use_container_width=True)
+
+                if st.button("🔍 OCR识别题目、答案和评分细则", type="primary", key="btn_qb_ocr"):
+                    with st.spinner("正在识别…"):
+                        try:
+                            img_b64, mime = _compress(img_bytes)
+                            raw = chat_with_image(image_b64=img_b64, mime_type=mime,
+                                                  model=OCR_MODEL, prompt=_SINGLE_PROMPT)
+                            raw = raw.strip()
+                            match = __import__("re").search(r"\[[\s\S]*\]", raw)
+                            items = json.loads(match.group() if match else raw)
+                            st.session_state["qb_ocr_items"] = items
+                            st.success(f"识别完成，共 {len(items)} 道题，请确认后录入")
+                        except Exception as e:
+                            st.error(f"识别失败：{e}")
+
+        # ── 双图模式 ──────────────────────────────────────
+        else:
+            st.caption("分别上传题目页和答案页，AI 自动按题号配对合并")
+            col_q, col_a = st.columns(2)
+            with col_q:
+                file_q = st.file_uploader("📄 题目页图片", type=["jpg", "jpeg", "png"], key="qb_img_q")
+                if file_q:
+                    st.image(file_q.read(), use_container_width=True)
+                    file_q.seek(0)
+            with col_a:
+                file_a = st.file_uploader("📄 答案页图片", type=["jpg", "jpeg", "png"], key="qb_img_a")
+                if file_a:
+                    st.image(file_a.read(), use_container_width=True)
+                    file_a.seek(0)
+
+            if file_q and file_a:
+                if st.button("🔍 双图识别并配对题目与答案", type="primary", key="btn_qb_dual_ocr"):
+                    with st.spinner("正在识别并配对，请稍候（两张图，可能需要30秒）…"):
+                        try:
+                            b64_q, mime_q = _compress(file_q.read())
+                            b64_a, mime_a = _compress(file_a.read())
+                            images = [{"b64": b64_q, "mime": mime_q},
+                                      {"b64": b64_a, "mime": mime_a}]
+                            raw = chat_with_images(images=images, model=OCR_MODEL, prompt=_DUAL_PROMPT)
+                            raw = raw.strip()
+                            match = __import__("re").search(r"\[[\s\S]*\]", raw)
+                            items = json.loads(match.group() if match else raw)
+                            st.session_state["qb_ocr_items"] = items
+                            st.success(f"识别完成，共配对 {len(items)} 道题，请逐题确认后录入")
+                        except Exception as e:
+                            st.error(f"识别失败：{e}")
 
         if st.session_state.get("qb_ocr_items"):
             items = st.session_state["qb_ocr_items"]
