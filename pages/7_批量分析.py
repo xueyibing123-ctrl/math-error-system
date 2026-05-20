@@ -216,7 +216,7 @@ st.info("""
 """)
 
 if st.button("填入示例", key="btn_example"):
-    st.session_state["batch_input"] = """题目：小明有5个苹果，小红的苹果是小明的8倍少4个，小红有几个苹果？
+    st.session_state["batch_textarea"] = """题目：小明有5个苹果，小红的苹果是小明的8倍少4个，小红有几个苹果？
 步骤：5×8=40，40-4=36，小红有36个苹果
 ---
 题目：一根绳子长12米，剪去全长的1/3，还剩多少米？
@@ -224,6 +224,7 @@ if st.button("填入示例", key="btn_example"):
 ---
 题目：学校买了8箱铅笔，每箱24支，一共多少支？
 步骤：8+24=32，一共32支"""
+    st.rerun()
 
 with st.expander("📷 拍照上传（自动识别题目和步骤）"):
     uploaded_imgs = st.file_uploader(
@@ -278,11 +279,11 @@ with st.expander("📷 拍照上传（自动识别题目和步骤）"):
             prog.empty()
 
             combined = "\n---\n".join(t for t in page_results if t)
-            st.session_state["batch_input"] = combined
+            st.session_state["batch_textarea"] = combined
             st.success(f"识别完成！{len(uploaded_imgs)} 张图片已合并，请确认后点击「开始批量分析」")
+            st.rerun()
 
 batch_text = st.text_area("粘贴题目（多题用 --- 分隔）",
-                          value=st.session_state.get("batch_input", ""),
                           height=300, key="batch_textarea")
 
 col1, col2 = st.columns([1, 3])
