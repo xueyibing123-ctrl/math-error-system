@@ -52,12 +52,17 @@ col2.metric("支持功能", "按点给分")
 col3.metric("检索方式", "向量+文字+图像")
 with col4:
     if st.button("⚡ 补全题目向量", help="为尚未生成语义向量的题目批量生成，提升检索准确率"):
-        with st.spinner("正在生成向量，请稍候…"):
-            ok, fail = backfill_embeddings(limit=50)
-        if ok + fail == 0:
-            st.info("所有题目已有向量，无需补全")
-        else:
-            st.success(f"完成：{ok} 道生成成功，{fail} 道失败")
+        try:
+            with st.spinner("正在生成向量，请稍候…"):
+                ok, fail = backfill_embeddings(limit=50)
+            if ok + fail == 0:
+                st.info("所有题目已有向量，无需补全")
+            elif fail == 0:
+                st.success(f"✅ 完成：{ok} 道生成成功")
+            else:
+                st.warning(f"完成：{ok} 道成功，{fail} 道失败（可能是 API Key 未配置或题库无文字）")
+        except Exception as _e:
+            st.error(f"补全向量失败：{_e}")
 
 st.divider()
 

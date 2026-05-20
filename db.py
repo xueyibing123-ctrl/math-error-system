@@ -360,7 +360,8 @@ def _update_embedding(question_id: int, embedding: list):
     try:
         conn = get_conn()
         cur = conn.cursor()
-        cur.execute("UPDATE question_bank SET embedding=%s::vector WHERE id=%s",
+        # CAST syntax is more portable across psycopg2 versions than %s::vector
+        cur.execute("UPDATE question_bank SET embedding=CAST(%s AS vector) WHERE id=%s",
                     (vec_str, question_id))
         conn.commit()
         cur.close()
@@ -414,6 +415,7 @@ def backfill_embeddings(limit: int = 20) -> tuple:
     """
     为还没有向量的题目批量生成向量。
     返回 (成功数, 失败数)，每次最多处理 limit 道。
+    失败时抛出 RuntimeError，包含具体原因。
     """
     try:
         conn = get_conn()
@@ -425,7 +427,10 @@ def backfill_embeddings(limit: int = 20) -> tuple:
         rows = cur.fetchall()
         cur.close()
         conn.close()
-    except Exception:
+    except Exception as e:
+        raise RuntimeError(f"查询题库失败：{e}") from e
+
+    if not rows:
         return 0, 0
 
     from llm_client import embed
@@ -486,7 +491,7 @@ def search_question_bank(question_text: str, subject: str = None,
             cur.execute(
                 "SELECT id, question_text, correct_answer, source, total_points, "
                 "scoring_criteria, image_hash, "
-                "COALESCE(1-(embedding<=>%s::vector), 0) AS vec_sim "
+                "COALESCE(1-(embedding<=>CAST(%s AS vector)), 0) AS vec_sim "
                 f"FROM question_bank{where}",
                 [vec_str] + params
             )
