@@ -208,12 +208,12 @@ with tab1:
                          "平均耗时(s)":f"{avg_t:.1f}",
                          "_s":avg_sim,"_t":avg_t})
         rows.sort(key=lambda x: (-x["_s"], x["_t"]))
-        medals = ["🥇","🥈","🥉"]
-        for i,r in enumerate(rows):
-            r["排名"] = medals[i] if i < 3 else str(i+1)
+        top2 = rows[:2]
+        for i, r in enumerate(top2):
+            r["排名"] = ["🥇","🥈"][i]
         display = ["排名","模型","平均相似度"] + \
                   [f"图{i+1}相似度" for i in range(len(valid_cases))] + ["平均耗时(s)"]
-        st.dataframe(pd.DataFrame(rows)[display], hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame(top2)[display], hide_index=True, use_container_width=True)
         best_ocr = rows[0]
         st.info(f"💡 推荐：**{best_ocr['模型'].split('（')[0]}** — 相似度 {best_ocr['平均相似度']}，耗时 {best_ocr['平均耗时(s)']}s")
 
@@ -371,10 +371,11 @@ with tab2:
                 row2[t] = f"{sum(vals)/len(vals)*100:.0f}%"
             rows2.append(row2)
         rows2.sort(key=lambda x: (-x["_acc"], x["_t"]))
-        for i,r in enumerate(rows2):
-            r["排名"] = ["🥇","🥈","🥉"][i] if i < 3 else str(i+1)
+        top2b = rows2[:2]
+        for i, r in enumerate(top2b):
+            r["排名"] = ["🥇","🥈"][i]
         dcols = ["排名","模型","总准确率"] + CASE_TYPES + ["平均耗时(s)"]
-        st.dataframe(pd.DataFrame(rows2)[dcols], hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame(top2b)[dcols], hide_index=True, use_container_width=True)
         best2 = rows2[0]
         st.info(f"💡 推荐：**{best2['模型'].split('（')[0]}** — 准确率 {best2['总准确率']}，耗时 {best2['平均耗时(s)']}s")
 
