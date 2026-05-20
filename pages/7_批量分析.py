@@ -269,25 +269,28 @@ with st.expander("📷 拍照上传（自动识别题目和步骤）"):
                 img.save(buf, format="JPEG", quality=88)
                 return base64.b64encode(buf.getvalue()).decode(), "image/jpeg"
 
+            # 先在主线程读取所有文件内容（UploadedFile不是线程安全的）
+            all_bytes = [f.read() for f in uploaded_imgs]
+
             def _ocr_one_page(args):
-                i, f = args
-                b64, mime = _compress_batch(f.read())
+                i, raw_bytes = args
+                b64, mime = _compress_batch(raw_bytes)
                 text = chat_with_image(model=OCR_MODEL, image_b64=b64,
                                        mime_type=mime, prompt=OCR_PROMPT_BATCH)
                 return i, text.strip()
 
-            prog = st.progress(0, text=f"并行识别 {len(uploaded_imgs)} 张图片…")
-            page_results = [None] * len(uploaded_imgs)
+            prog = st.progress(0, text=f"并行识别 {len(all_bytes)} 张图片…")
+            page_results = [None] * len(all_bytes)
             done = 0
             with ThreadPoolExecutor(max_workers=5) as ex:
-                futs = {ex.submit(_ocr_one_page, (i, f)): i
-                        for i, f in enumerate(uploaded_imgs)}
+                futs = {ex.submit(_ocr_one_page, (i, b)): i
+                        for i, b in enumerate(all_bytes)}
                 for fut in as_completed(futs):
                     i, text = fut.result()
                     page_results[i] = text
                     done += 1
-                    prog.progress(done / len(uploaded_imgs),
-                                  text=f"已完成 {done}/{len(uploaded_imgs)} 张…")
+                    prog.progress(done / len(all_bytes),
+                                  text=f"已完成 {done}/{len(all_bytes)} 张…")
             prog.empty()
 
             combined = "\n---\n".join(t for t in page_results if t)
