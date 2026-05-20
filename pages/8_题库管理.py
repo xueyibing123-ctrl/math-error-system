@@ -34,10 +34,14 @@ VISION_MODELS = {
 }
 
 TEXT_MODELS = {
-    "qwen-max（通义千问·推荐）": "qwen-max",
-    "DeepSeek-V3（深度求索·高精度）": "deepseek-v4-pro",
-    "DeepSeek-R1（链式推理·最准）": "deepseek-reasoner",
-    "GLM-4-Flash（智谱·快速免费）": "glm-4-flash",
+    "qwen-max（通义·最强）": "qwen-max",
+    "qwen-plus（通义·均衡）": "qwen-plus",
+    "DeepSeek-V4-Pro（DeepSeek·旗舰）": "deepseek-v4-pro",
+    "DeepSeek-V4-Flash（DeepSeek·快速）": "deepseek-v4-flash",
+    "Doubao-Seed-2.0-Pro（豆包·旗舰）": "doubao-seed-2.0-pro",
+    "GLM-4-Plus（智谱·高精度）": "glm-4-plus",
+    "GLM-4-Air（智谱·均衡）": "glm-4-air",
+    "GLM-4-Flash（智谱·免费快速）": "glm-4-flash",
 }
 
 icon_title("assets/icons/批量分析.svg", "题库管理")

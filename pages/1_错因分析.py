@@ -35,13 +35,17 @@ VISION_MODELS = {
 
 # 分析模型（支持文本输入，用于错因判断）
 ANALYSIS_MODELS = {
-    "qwen-max（通义千问·推荐）": "qwen-max",
-    "DeepSeek-V4-Pro（最强·深度思考）": "deepseek-v4-pro",
-    "DeepSeek-V4-Flash（快速·低价）": "deepseek-v4-flash",
-    "DeepSeek-R1（链式推理）": "deepseek-reasoner",
-    "Doubao-Seed-2.0-Pro（豆包·最新旗舰）": "doubao-seed-2.0-pro",
+    "qwen-max（通义·最强）": "qwen-max",
+    "qwen-plus（通义·均衡）": "qwen-plus",
+    "qwen-turbo（通义·快速）": "qwen-turbo",
+    "DeepSeek-V4-Pro（DeepSeek·旗舰）": "deepseek-v4-pro",
+    "DeepSeek-V4-Flash（DeepSeek·快速）": "deepseek-v4-flash",
+    "DeepSeek-R1（DeepSeek·推理）": "deepseek-reasoner",
+    "Doubao-Seed-2.0-Pro（豆包·旗舰）": "doubao-seed-2.0-pro",
     "Doubao-1.5-Pro-256k（豆包·长文本）": "doubao-1-5-pro-256k-250115",
-    "GLM-4-Flash（智谱·快速免费）": "glm-4-flash",
+    "GLM-4-Plus（智谱·高精度）": "glm-4-plus",
+    "GLM-4-Air（智谱·均衡）": "glm-4-air",
+    "GLM-4-Flash（智谱·免费快速）": "glm-4-flash",
 }
 
 # 手动输入单题时可选的分析模型（同上）
