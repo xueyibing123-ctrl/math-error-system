@@ -7,6 +7,8 @@ import plotly.express as px
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 from llm_client import chat, chat_with_image
+from PIL import Image
+import io
 from db import save_record, count_same_error, upsert_alert, search_question_bank, init_question_bank
 try:
     init_question_bank()
@@ -224,30 +226,60 @@ if st.button("填入示例", key="btn_example"):
 步骤：8+24=32，一共32支"""
 
 with st.expander("📷 拍照上传（自动识别题目和步骤）"):
-    uploaded_img = st.file_uploader("上传试卷/作业照片，AI自动提取所有题目",
-                                    type=["jpg", "jpeg", "png"], key="batch_img")
-    if uploaded_img:
-        st.image(uploaded_img, width=400)
+    uploaded_imgs = st.file_uploader(
+        "上传试卷/作业照片（可多选，支持多张）",
+        type=["jpg", "jpeg", "png"], key="batch_img",
+        accept_multiple_files=True
+    )
+    if uploaded_imgs:
+        cols = st.columns(min(len(uploaded_imgs), 3))
+        for i, f in enumerate(uploaded_imgs):
+            cols[i % 3].image(f.read(), use_container_width=True)
+            f.seek(0)
+        st.caption(f"已上传 {len(uploaded_imgs)} 张图片")
+
         if st.button("识别图片中的所有题目", key="btn_batch_ocr"):
-            img_bytes = uploaded_img.read()
-            img_b64 = base64.b64encode(img_bytes).decode("utf-8")
-            suffix = uploaded_img.name.split(".")[-1].lower()
-            mime = "image/jpeg" if suffix in ("jpg", "jpeg") else "image/png"
-            with st.spinner("正在识别图片中的题目..."):
-                try:
-                    ocr_result = chat_with_image(
-                        model=OCR_MODEL, image_b64=img_b64, mime_type=mime,
-                        prompt="""请识别图片中所有题目和学生解题步骤。
+            OCR_PROMPT_BATCH = """请识别图片中所有题目和学生解题步骤。
 每道题按以下格式输出，题目之间用---分隔：
 题目：[题目内容]
 步骤：[学生写的解题步骤]
 ---
 如果某题没有解题步骤，步骤写"未作答"。只输出题目内容，不要其他说明。"""
-                    )
-                    st.session_state["batch_input"] = ocr_result
-                    st.success("识别完成！已自动填入下方输入框。")
-                except Exception as e:
-                    st.error(f"识别失败：{e}")
+
+            def _compress_batch(raw_bytes):
+                img = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+                w, h = img.size
+                if max(w, h) > 2000:
+                    ratio = 2000 / max(w, h)
+                    img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=88)
+                return base64.b64encode(buf.getvalue()).decode(), "image/jpeg"
+
+            def _ocr_one_page(args):
+                i, f = args
+                b64, mime = _compress_batch(f.read())
+                text = chat_with_image(model=OCR_MODEL, image_b64=b64,
+                                       mime_type=mime, prompt=OCR_PROMPT_BATCH)
+                return i, text.strip()
+
+            prog = st.progress(0, text=f"并行识别 {len(uploaded_imgs)} 张图片…")
+            page_results = [None] * len(uploaded_imgs)
+            done = 0
+            with ThreadPoolExecutor(max_workers=5) as ex:
+                futs = {ex.submit(_ocr_one_page, (i, f)): i
+                        for i, f in enumerate(uploaded_imgs)}
+                for fut in as_completed(futs):
+                    i, text = fut.result()
+                    page_results[i] = text
+                    done += 1
+                    prog.progress(done / len(uploaded_imgs),
+                                  text=f"已完成 {done}/{len(uploaded_imgs)} 张…")
+            prog.empty()
+
+            combined = "\n---\n".join(t for t in page_results if t)
+            st.session_state["batch_input"] = combined
+            st.success(f"识别完成！{len(uploaded_imgs)} 张图片已合并，请确认后点击「开始批量分析」")
 
 batch_text = st.text_area("粘贴题目（多题用 --- 分隔）",
                           value=st.session_state.get("batch_input", ""),
