@@ -70,14 +70,21 @@ for _k, _v in {
 DRILL_THRESHOLD = 3
 
 TEXT_SYSTEM_PROMPT = """
-你是通用学科错因分析系统，适用于小学、初中、高中各年级，覆盖数学、语文、英语、物理、化学、历史、政治等所有学科。你必须严格输出合法JSON，不要输出任何额外文本。
+你是一位经验丰富的作业批改助手，适用于小学、初中、高中各年级，覆盖数学、语文、英语、物理、化学、历史、政治等所有学科。你必须严格输出合法JSON，不要输出任何额外文本。
+
+【批改宽松原则（重要，优先执行）】
+- 时间单位缩写等价：分=分钟、秒=秒钟、时=小时，不扣分
+- 数字与汉字等价：1=一、0.5=二分之一，不扣分
+- 语文/英语阅读理解、简答、主观题：重点看意思和要点是否准确，不强求用词与参考答案完全相同，意思对即算对
+- 计算步骤有小笔误但结果正确，酌情判对
+- 有参考答案时以参考答案为准，但允许合理的同义表述
 
 【必须按以下步骤执行】
 第一步：独立作答（不看学生答案，先自己得出正确答案）
-第二步：比对（完全正确→"答案是否有误":false，有误→true）
+第二步：宽松比对（完全正确或意思相符→"答案是否有误":false，有明显错误→true）
 第三步：输出JSON
 
-错因标签：A1抄写错误/A2过程错误/A3基础薄弱/B1概念错误/B2方法误判/B3迁移失败/C1综合困难/C2畏难放弃/C3抽象不足
+错因标签（仅答错时填写）：A1抄写错误/A2过程错误/A3基础薄弱/B1概念错误/B2方法误判/B3迁移失败/C1综合困难/C2畏难放弃/C3抽象不足
 
 输出格式：
 {"答案是否有误":true或false,"题型判断":"...","错因标签":[],"判断理由":[],"建议干预策略":[],"温和反馈":"见下方要求"}
@@ -86,17 +93,23 @@ TEXT_SYSTEM_PROMPT = """
 - 答案有误：用苏格拉底问答法，先肯定学生思考，再用1~2个启发性问题引导学生自己发现错误，不直接给答案，语气亲切，120~200字
 - 答案正确：真诚鼓励，夸具体思维亮点，50字以内
 
-答案正确时：后四个数组全为[]。
+答案正确时：错因标签、判断理由、建议干预策略全部输出[]。
 """.strip()
 
 # 整页识别+分析一次完成的联合Prompt
-COMBINED_PROMPT = """你是通用学科错因分析系统，请完成两步工作：
+COMBINED_PROMPT = """你是一位经验丰富的作业批改助手，请完成两步工作：
 
 第一步：识别图片中的所有题目（数学/语文/英语/物理/化学等均适用）
-第二步：对每道题独立判断学生答案是否正确，给出完整错因分析
+第二步：对每道题独立判断学生答案是否正确，给出批改结果
 
-要求：
-- 先自己推导出正确答案，再与学生答案比对
+【批改宽松原则（重要）】
+- 时间单位缩写等价：分=分钟、秒=秒钟、时=小时，不扣分
+- 数字与汉字等价：1=一、0.5=二分之一，不扣分
+- 语文/英语主观题、阅读理解：重点看意思和要点是否准确，不强求用词完全一致
+- 计算步骤有小笔误但结果正确，酌情判对
+
+其他要求：
+- 先自己推导出正确答案，再宽松比对学生答案
 - 数学/物理公式用$...$包裹LaTeX，如$x^2$、$\\frac{1}{2}$
 - 语文/英语保持原文
 
@@ -120,7 +133,7 @@ COMBINED_PROMPT = """你是通用学科错因分析系统，请完成两步工�
   }
 ]
 
-错因标签：A1抄写/A2过程错/A3基础薄弱/B1概念错/B2方法误判/B3迁移失败/C1综合困难/C2畏难/C3抽象不足
+错因标签（仅答错时填写）：A1抄写/A2过程错/A3基础薄弱/B1概念错/B2方法误判/B3迁移失败/C1综合困难/C2畏难/C3抽象不足
 答案正确时：答案是否有误=false，错因标签/判断理由/建议干预策略均为[]"""
 
 
@@ -411,7 +424,7 @@ elif page_mode == "📷 拍照整页·双模型（OCR模型+分析模型，可�
         )
     with col_ana:
         ana_label = st.selectbox(
-            "🧠 错因分析模型",
+            "🧠 批改分析模型",
             list(ANALYSIS_MODELS.keys()),
             key="dual_ana_select",
             help="负责判断对错、分析错因，推理能力强的模型更准"
@@ -649,7 +662,7 @@ if st.button("开始分析", type="primary"):
 # 展示分析结果
 if st.session_state.analysis_result:
     data = st.session_state.analysis_result
-    st.success("分析完成")
+    is_wrong = data.get("答案是否有误", False)
 
     ERROR_DESC = {
         "A1": "抄写/转录错误", "A2": "解题过程错误", "A3": "基础知识薄弱",
@@ -657,23 +670,28 @@ if st.session_state.analysis_result:
         "C1": "综合理解困难", "C2": "畏难情绪放弃", "C3": "抽象思维不足",
     }
 
-    with st.container(border=True):
-        st.markdown(f"**📌 题型判断**：{data.get('题型判断', '-')}")
-        st.markdown("**🏷️ 错因标签**")
-        for tag in data.get("错因标签", []):
-            st.error(f"**{tag}** — {ERROR_DESC.get(tag, '')}")
-        st.markdown("**🔍 判断理由**")
-        for reason in data.get("判断理由", []):
-            st.write(f"• {reason}")
-        st.markdown("**💡 建议干预策略**")
-        for strategy in data.get("建议干预策略", []):
-            st.write(f"• {strategy}")
-
-    render_scoring(data)
-    st.markdown("### 💬 温和反馈")
-    st.info(data.get("温和反馈", ""))
-    if st.session_state.main_error != "UNKNOWN" and st.session_state.error_count >= DRILL_THRESHOLD:
-        st.warning(f"⚠ 错因 **{st.session_state.main_error}** 累计 **{st.session_state.error_count}** 次，建议专项训练。")
+    if not is_wrong:
+        # 答案正确：只显示✅和鼓励
+        st.success(f"✅ 批改完成 · **{data.get('题型判断', '')}**")
+        st.info(data.get("温和反馈", ""))
+    else:
+        # 答案有误：显示完整错因分析
+        st.error(f"❌ 批改完成 · **{data.get('题型判断', '')}**")
+        with st.container(border=True):
+            st.markdown("**🏷️ 错因标签**")
+            for tag in data.get("错因标签", []):
+                st.error(f"**{tag}** — {ERROR_DESC.get(tag, '')}")
+            st.markdown("**🔍 判断理由**")
+            for reason in data.get("判断理由", []):
+                st.write(f"• {reason}")
+            st.markdown("**💡 建议干预策略**")
+            for strategy in data.get("建议干预策略", []):
+                st.write(f"• {strategy}")
+        render_scoring(data)
+        st.markdown("### 💬 温和反馈")
+        st.info(data.get("温和反馈", ""))
+        if st.session_state.main_error != "UNKNOWN" and st.session_state.error_count >= DRILL_THRESHOLD:
+            st.warning(f"⚠ 错因 **{st.session_state.main_error}** 累计 **{st.session_state.error_count}** 次，建议专项训练。")
 
 # 专项训练区域
 if st.session_state.main_error != "UNKNOWN" and st.session_state.error_count >= DRILL_THRESHOLD:
