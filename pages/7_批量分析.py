@@ -45,22 +45,29 @@ AVAILABLE_MODELS = {
 }
 
 SYSTEM_PROMPT = """
-你是通用学科错因分析系统，支持小学到高中所有学科和所有题型（选择题、填空题、判断题、解答题、应用题、阅读理解等）。严格输出合法JSON，不输出任何额外文本。
+你是一位经验丰富的作业批改助手，支持小学到高中所有学科和所有题型。严格输出合法JSON，不输出任何额外文本。
 
-【题型判断与分析规则】
-- 选择题/判断题：学生答案为字母(A/B/C/D)或√×，与正确答案比对即可，若学生答案为"未作答"则判错
-- 填空题：学生答案为填入内容，判断是否正确
-- 解答/应用题：看步骤是否完整正确
-- 钟表/画图题：学生答案为对指针位置的文字描述，根据题目要求的时刻判断是否画对
-- 表格补全题：学生答案为各格填写内容，逐格判断是否符合规律或题意
-- 未作答（学生答案为空或"未作答"）：直接判为有误，错因选C2
+【批改宽松原则（重要，优先执行）】
+- 时间单位缩写等价：分=分钟、秒=秒钟、时=小时，不扣分
+- 数字与汉字等价：1=一、0.5=二分之一，不扣分
+- 语文/英语阅读理解、简答、主观题：重点看意思和要点是否准确，不强求用词与参考答案完全相同，意思对即算对
+- 计算步骤有小笔误但结果正确，酌情判对
+- 有参考答案时以参考答案为准，但允许合理的同义表述
+
+【题型判断与批改规则】
+- 选择题/判断题：学生答案为字母(A/B/C/D)或√×，对比正确答案
+- 填空题：学生答案与正确意思相符即可，允许合理缩写
+- 解答/应用题：看步骤思路和结果是否正确
+- 钟表/画图题：学生答案为指针位置的文字描述，对比题目要求时刻
+- 表格补全题：逐格判断内容是否符合规律或题意
+- 未作答（学生答案为"未作答"或空白）：判为有误，错因选C2
 
 【执行步骤】
-第一步：识别题型，自己推导正确答案
-第二步：与学生答案比对（未作答直接判错）
+第一步：识别题型，确定正确答案（有题库参考答案时以其为准）
+第二步：宽松比对学生作答（未作答直接判错）
 第三步：输出JSON
 
-错因标签：
+错因标签（仅答错时填写）：
 A1抄写错误 / A2过程错误 / A3基础薄弱
 B1概念错误 / B2方法误判 / B3迁移失败
 C1综合困难 / C2未作答/畏难 / C3抽象不足
@@ -68,7 +75,7 @@ C1综合困难 / C2未作答/畏难 / C3抽象不足
 输出格式：
 {
   "答案是否有误": true或false,
-  "题型判断": "如：数学选择题 / 语文填空题",
+  "题型判断": "如：数学选择题 / 语文阅读简答",
   "正确答案": "正确答案是什么",
   "错因标签": [],
   "判断理由": [],
@@ -81,7 +88,7 @@ C1综合困难 / C2未作答/畏难 / C3抽象不足
 - 答案有误：苏格拉底问答法，肯定思考后用1~2个启发问题引导，不直接给答案，100~150字
 - 答案正确：真诚鼓励具体亮点，30字以内
 
-答案正确时后四个数组全部为[]。
+答案正确时，错因标签、判断理由、建议干预策略全部输出[]。
 """.strip()
 
 
@@ -142,24 +149,28 @@ def analyze_one(idx, question, steps, model, subject, student_id):
 
         is_wrong = data.get("答案是否有误", False)
         tags = data.get("错因标签", [])
-        main_error = (tags[0] if isinstance(tags, list) and tags else "UNKNOWN") if is_wrong else "UNKNOWN"
+        main_error = (tags[0] if isinstance(tags, list) and tags else "") if is_wrong else ""
 
-        save_record(student_id, question, steps, main_error, data.get("温和反馈", ""))
-        error_count = count_same_error(main_error)
-        if main_error != "UNKNOWN" and error_count >= DRILL_THRESHOLD:
-            upsert_alert(student_id=student_id, error_code=main_error,
-                         error_count=error_count, threshold=DRILL_THRESHOLD)
+        save_record(student_id, question, steps, main_error or "UNKNOWN", data.get("温和反馈", ""))
+        if main_error:
+            error_count = count_same_error(main_error)
+            if error_count >= DRILL_THRESHOLD:
+                upsert_alert(student_id=student_id, error_code=main_error,
+                             error_count=error_count, threshold=DRILL_THRESHOLD)
 
         scoring_str = ""
         if data.get("按点得分"):
             got = data.get("得分", 0)
             full = data.get("满分", 0)
-            scoring_str = f"得分：{got}/{full}分"
+            scoring_str = f"{got}/{full}分"
+
+        批改结果 = "✅ 正确" if not is_wrong else f"❌ {main_error}"
 
         return idx, {
             "题号": idx + 1,
             "题目": question[:40] + "…" if len(question) > 40 else question,
             "步骤": steps[:30] + "…" if len(steps) > 30 else steps,
+            "批改结果": 批改结果,
             "错因": main_error,
             "题型": data.get("题型判断", "-"),
             "反馈": data.get("温和反馈", "-"),
@@ -173,7 +184,8 @@ def analyze_one(idx, question, steps, model, subject, student_id):
             "题号": idx + 1,
             "题目": question[:40] + "…" if len(question) > 40 else question,
             "步骤": steps[:30] + "…" if len(steps) > 30 else steps,
-            "错因": "UNKNOWN", "题型": "-",
+            "批改结果": "⚠️ 失败",
+            "错因": "", "题型": "-",
             "反馈": f"分析失败：{e}", "得分": "", "按点得分": [],
             "状态": "❌ 失败", "是否有误": False,
         }
@@ -181,7 +193,7 @@ def analyze_one(idx, question, steps, model, subject, student_id):
 
 # ── 页面 ─────────────────────────────────────────────
 icon_title("assets/icons/批量分析.svg", "批量分析")
-st.caption("一次粘贴多道题目，AI批量识别错因并写入错题本。")
+st.caption("拍照或粘贴作业，AI批量批改并记录错题。")
 
 user = st.session_state.get("user", {})
 student_id = user.get("username", "unknown")
@@ -202,7 +214,7 @@ with col_ocr:
     )
 with col_model:
     model_label = st.selectbox(
-        "🧠 错因分析模型",
+        "🧠 批改分析模型",
         list(AVAILABLE_MODELS.keys()),
         key="batch_analysis_model"
     )
@@ -376,39 +388,57 @@ if st.button("🚀 开始批量分析", type="primary", key="btn_batch"):
 
 if st.session_state.get("batch_results"):
     results = st.session_state["batch_results"]
-    st.divider()
-    st.subheader("📊 分析结果")
     df = pd.DataFrame(results)
-    display_cols = [c for c in ["题号", "题目", "错因", "得分", "题型", "状态"] if c in df.columns]
+
+    # ── 汇总数字 ───────────────────────────────────────
+    st.divider()
+    total = len(results)
+    correct_n = len([r for r in results if not r.get("是否有误") and r["状态"] == "✅ 完成"])
+    wrong_n = len([r for r in results if r.get("是否有误")])
+    mc1, mc2, mc3 = st.columns(3)
+    mc1.metric("共批改", f"{total} 题")
+    mc2.metric("✅ 正确", f"{correct_n} 题")
+    mc3.metric("❌ 错误", f"{wrong_n} 题")
+
+    st.subheader("📋 批改结果")
+    display_cols = [c for c in ["题号", "题目", "批改结果", "得分", "题型"] if c in df.columns]
     st.dataframe(df[display_cols], use_container_width=True)
 
-    st.divider()
-    st.subheader("🔍 本次错因汇总")
-    error_summary = df[df["错因"] != "UNKNOWN"]["错因"].value_counts().reset_index()
-    error_summary.columns = ["错因", "次数"]
-    if not error_summary.empty:
-        col1, col2 = st.columns(2)
-        with col1:
-            st.dataframe(error_summary, use_container_width=True)
-        with col2:
-            fig = px.pie(error_summary, names="错因", values="次数", hole=0.35,
-                         color_discrete_sequence=px.colors.qualitative.Set3)
-            fig.update_layout(height=250, margin=dict(t=10, b=10, l=10, r=10))
-            st.plotly_chart(fig, use_container_width=True)
+    # ── 错题分析（只统计错题）──────────────────────────
+    wrong_df = df[df["是否有误"] == True]
+    if not wrong_df.empty and wrong_df["错因"].str.strip().any():
+        st.divider()
+        st.subheader("🔍 错题分析")
+        error_summary = (wrong_df[wrong_df["错因"].str.strip() != ""]["错因"]
+                         .value_counts().reset_index())
+        error_summary.columns = ["错因", "次数"]
+        if not error_summary.empty:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.dataframe(error_summary, use_container_width=True)
+            with col2:
+                fig = px.pie(error_summary, names="错因", values="次数", hole=0.35,
+                             color_discrete_sequence=px.colors.qualitative.Set3)
+                fig.update_layout(height=250, margin=dict(t=10, b=10, l=10, r=10))
+                st.plotly_chart(fig, use_container_width=True)
 
+    # ── 详细反馈 ────────────────────────────────────────
     st.divider()
     st.subheader("💬 详细反馈")
     for r in results:
         if r["状态"] == "✅ 完成":
             with st.container(border=True):
-                col1, col2 = st.columns([3, 1])
+                col1, col2 = st.columns([4, 1])
                 with col1:
-                    wrong_mark = "❌" if r.get("是否有误") else "✅"
-                    score_badge = f" · {r['得分']}" if r.get("得分") else ""
-                    st.markdown(f"**第{r['题号']}题** {wrong_mark} · 错因：`{r['错因']}`{score_badge}")
+                    score_badge = f" · **{r['得分']}**" if r.get("得分") else ""
+                    if r.get("是否有误"):
+                        error_badge = f" · 错因：`{r['错因']}`" if r.get("错因") else ""
+                        st.markdown(f"**第{r['题号']}题** ❌{error_badge}{score_badge}")
+                    else:
+                        st.markdown(f"**第{r['题号']}题** ✅{score_badge}")
                     st.caption(r["题目"])
                 with col2:
-                    st.markdown(f"**{r['状态']}**")
+                    st.caption(r.get("题型", "-"))
                 breakdown = r.get("按点得分", [])
                 if breakdown:
                     for item in breakdown:
@@ -420,6 +450,6 @@ if st.session_state.get("batch_results"):
                     st.divider()
                 st.write(r["反馈"])
 
-    csv = df.drop(columns=["是否有误", "按点得分"], errors="ignore").to_csv(index=False).encode("utf-8-sig")
-    st.download_button("⬇️ 导出批量分析结果", data=csv,
-                       file_name="batch_analysis.csv", mime="text/csv")
+    csv = df.drop(columns=["是否有误", "按点得分", "状态"], errors="ignore").to_csv(index=False).encode("utf-8-sig")
+    st.download_button("⬇️ 导出批改结果", data=csv,
+                       file_name="批改结果.csv", mime="text/csv")
