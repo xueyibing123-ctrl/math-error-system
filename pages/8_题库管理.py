@@ -186,15 +186,30 @@ with tab1:
   }
 ]"""
 
-        def _do_ocr_single(files):
-            """对每张图分别 OCR，返回拼接后的原始文字。"""
-            texts = []
-            for i, f in enumerate(files):
-                b64, mime = _compress(f.read())
+        def _do_ocr_single(files, label="", progress_cb=None):
+            """并行 OCR 多张图片，返回按页序拼接的原始文字。"""
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            compressed = [(i, _compress(f.read())) for i, f in enumerate(files)]
+
+            def _ocr_one(args):
+                i, (b64, mime) = args
                 t = chat_with_image(image_b64=b64, mime_type=mime,
                                     model=OCR_MODEL, prompt=OCR_PROMPT)
-                texts.append(f"--- 第{i+1}页 ---\n{t.strip()}")
-            return "\n\n".join(texts)
+                return i, t.strip()
+
+            results = [None] * len(files)
+            done = 0
+            with ThreadPoolExecutor(max_workers=5) as ex:
+                futs = {ex.submit(_ocr_one, item): item[0] for item in compressed}
+                for f in as_completed(futs):
+                    i, text = f.result()
+                    results[i] = text
+                    done += 1
+                    if progress_cb:
+                        progress_cb(done, len(files), label)
+
+            return "\n\n".join(f"--- {label}第{i+1}页 ---\n{t}" for i, t in enumerate(results))
 
         def _structure_single(raw_text):
             sys_p = "你是题目整理助手，严格输出合法JSON，不输出任何其他文字。"
@@ -263,8 +278,14 @@ with tab1:
 
                 if st.button("🔍 开始识别", type="primary", key="btn_qb_ocr"):
                     try:
-                        prog = st.progress(0, text="第①步：视觉模型读取文字…")
-                        raw_text = _do_ocr_single(files)
+                        n = len(files)
+                        prog = st.progress(0, text=f"第①步：并行识别 {n} 张图片…")
+
+                        def _cb(done, total, _label):
+                            prog.progress(int(done / total * 55),
+                                          text=f"第①步：已完成 {done}/{total} 张…")
+
+                        raw_text = _do_ocr_single(files, progress_cb=_cb)
                         prog.progress(60, text="第②步：文字模型整理题目与答案…")
                         raw_json = _structure_single(raw_text)
                         prog.progress(95, text="解析结果…")
@@ -302,11 +323,24 @@ with tab1:
                 st.caption(f"已上传：题目页 {len(files_q)} 张 · 答案页 {len(files_a)} 张")
                 if st.button("🔍 开始识别并配对", type="primary", key="btn_qb_dual_ocr"):
                     try:
-                        prog = st.progress(0, text=f"第①步：识别题目页（共{len(files_q)}张）…")
-                        q_text = _do_ocr_single(files_q)
-                        prog.progress(40, text=f"第①步：识别答案页（共{len(files_a)}张）…")
-                        a_text = _do_ocr_single(files_a)
-                        prog.progress(70, text="第②步：文字模型按题号配对…")
+                        nq, na = len(files_q), len(files_a)
+                        total_imgs = nq + na
+                        prog = st.progress(0, text=f"第①步：并行识别全部 {total_imgs} 张图片…")
+                        done_count = [0]
+
+                        def _cb(done, total, label):
+                            done_count[0] += 1
+                            pct = int(done_count[0] / total_imgs * 60)
+                            prog.progress(pct, text=f"第①步：{label}已完成 {done}/{total} 张（共{total_imgs}张）…")
+
+                        from concurrent.futures import ThreadPoolExecutor, as_completed as _ac
+                        with ThreadPoolExecutor(max_workers=2) as ex:
+                            fq = ex.submit(_do_ocr_single, files_q, "题目页", _cb)
+                            fa = ex.submit(_do_ocr_single, files_a, "答案页", _cb)
+                            q_text = fq.result()
+                            a_text = fa.result()
+
+                        prog.progress(65, text="第②步：文字模型按题号配对…")
                         raw_json = _structure_dual(q_text, a_text)
                         prog.progress(95, text="解析结果…")
                         new_items = _parse_items(raw_json)
