@@ -160,7 +160,31 @@ with tab1:
             img.save(buf, format="JPEG", quality=88)
             return base64.b64encode(buf.getvalue()).decode(), "image/jpeg"
 
-        OCR_PROMPT = "请将图片中所有文字原样识别输出，不要遗漏任何内容，包括题号、题目、选项、答案、评分说明等。保持原始排版顺序。"
+        OCR_PROMPT = (
+            "请将图片中所有文字原样识别输出，不要遗漏任何内容，"
+            "包括题号、题目、选项、答案、分值标注（如括号内的分数）、评分说明等。"
+            "保持原始排版顺序，每道题之间空一行。"
+        )
+
+        _SCORING_RULE = """
+评分细则生成规则：
+- 若题目/答案中有明确分值（如"(3分)"、"共5分"），必须填入"总分"
+- 若总分>0，请根据答案内容将分值拆分为合理的得分点，例如：
+  * 总分2分 → [{"criterion":"方法正确","points":1},{"criterion":"结果正确","points":1}]
+  * 总分3分 → 可按步骤或要点拆分
+  * 总分4分 → 通常2个得分点各2分，或4个各1分
+- 若确实无法拆分（如选择题），"评分细则"填[]
+"""
+
+        _JSON_SCHEMA = """[
+  {
+    "题号": "1",
+    "题目": "完整题目内容（含题号、题干、选项）",
+    "答案": "参考答案和解析过程",
+    "评分细则": [{"criterion": "得分点描述", "points": 分值}],
+    "总分": 整数
+  }
+]"""
 
         def _do_ocr_single(files):
             """对每张图分别 OCR，返回拼接后的原始文字。"""
@@ -173,28 +197,22 @@ with tab1:
             return "\n\n".join(texts)
 
         def _structure_single(raw_text):
-            """文字模型从同页原始文字中提取结构化 Q&A。"""
             sys_p = "你是题目整理助手，严格输出合法JSON，不输出任何其他文字。"
             usr_p = f"""以下是试卷的原始识别文字（学科：{subject}）：
 
 {raw_text}
 
-请从中提取所有题目和对应答案，整理成JSON数组。若同一题目有多个小问，合并为一条。
-[
-  {{
-    "题目": "完整题目内容（含题号、题干、选项）",
-    "答案": "参考答案和解析过程",
-    "评分细则": [{{"criterion": "得分点描述", "points": 分值}}],
-    "总分": 整数
-  }}
-]
-若没有评分细则，"评分细则"填[]，"总分"填0。只输出JSON数组。"""
+请提取所有题目和对应答案，整理成JSON数组。
+重要：不能遗漏任何一道题，若题号不连续请仔细检查原文再确认。
+{_SCORING_RULE}
+输出格式：
+{_JSON_SCHEMA}
+只输出JSON数组，不输出其他文字。"""
             return chat(model=TXT_MODEL, system=sys_p, user=usr_p, temperature=0.1)
 
         def _structure_dual(q_text, a_text):
-            """文字模型将题目页文字和答案页文字按题号配对。"""
             sys_p = "你是题目整理助手，严格输出合法JSON，不输出任何其他文字。"
-            usr_p = f"""学科：{subject}。以下是分别从题目页和答案页识别的原始文字，请按题号一一配对整理。
+            usr_p = f"""学科：{subject}。以下是分别从题目页和答案页识别的原始文字。
 
 【题目页原始文字】
 {q_text}
@@ -202,22 +220,35 @@ with tab1:
 【答案页原始文字】
 {a_text}
 
-请将题目与答案配对，输出JSON数组：
-[
-  {{
-    "题目": "完整题目内容（含题号、题干、选项）",
-    "答案": "参考答案和解析过程",
-    "评分细则": [{{"criterion": "得分点描述", "points": 分值}}],
-    "总分": 整数
-  }}
-]
-若答案页没有评分细则，"评分细则"填[]，"总分"填0。只输出JSON数组。"""
+请按题号将题目与答案一一配对。
+重要：不能遗漏任何一道题，若题号不连续请仔细检查原文再确认。
+{_SCORING_RULE}
+输出格式：
+{_JSON_SCHEMA}
+只输出JSON数组，不输出其他文字。"""
             return chat(model=TXT_MODEL, system=sys_p, user=usr_p, temperature=0.1)
 
         def _parse_items(raw):
             raw = raw.strip()
             m = __import__("re").search(r"\[[\s\S]*\]", raw)
             return json.loads(m.group() if m else raw)
+
+        def _check_missing(items):
+            """检测题号是否有缺失，返回缺失题号列表。"""
+            import re
+            nums = []
+            for item in items:
+                # 优先用题号字段，其次从题目文字里提取
+                n = item.get("题号", "")
+                if not n:
+                    m = re.match(r"^(\d+)[.、．\s]", item.get("题目", "").strip())
+                    n = m.group(1) if m else ""
+                if n and str(n).isdigit():
+                    nums.append(int(n))
+            if len(nums) < 2:
+                return []
+            full = set(range(min(nums), max(nums) + 1))
+            return sorted(full - set(nums))
 
         # ── 同页模式 ──────────────────────────────────────
         if ocr_mode == "📄 题目答案同页（可多张）":
@@ -241,7 +272,10 @@ with tab1:
                         prog.empty()
                         existing = st.session_state.get("qb_ocr_items") or []
                         st.session_state["qb_ocr_items"] = existing + new_items
+                        missing = _check_missing(new_items)
                         st.success(f"识别完成，新增 {len(new_items)} 道题（已累计 {len(existing) + len(new_items)} 道），可继续上传或直接录入")
+                        if missing:
+                            st.warning(f"⚠️ 检测到可能缺少第 **{', '.join(map(str, missing))}** 题，请检查原图并点击「＋ 手动补充一题」补录")
                     except Exception as e:
                         st.error(f"识别失败：{e}")
 
@@ -279,7 +313,10 @@ with tab1:
                         prog.empty()
                         existing = st.session_state.get("qb_ocr_items") or []
                         st.session_state["qb_ocr_items"] = existing + new_items
+                        missing = _check_missing(new_items)
                         st.success(f"配对完成，新增 {len(new_items)} 道题（已累计 {len(existing) + len(new_items)} 道），可继续上传或直接录入")
+                        if missing:
+                            st.warning(f"⚠️ 检测到可能缺少第 **{', '.join(map(str, missing))}** 题，请检查原图并点击「＋ 手动补充一题」补录")
                     except Exception as e:
                         st.error(f"识别失败：{e}")
 
