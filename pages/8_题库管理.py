@@ -237,10 +237,11 @@ with tab1:
                         prog.progress(60, text="第②步：文字模型整理题目与答案…")
                         raw_json = _structure_single(raw_text)
                         prog.progress(95, text="解析结果…")
-                        items = _parse_items(raw_json)
+                        new_items = _parse_items(raw_json)
                         prog.empty()
-                        st.session_state["qb_ocr_items"] = items
-                        st.success(f"识别完成，共 {len(items)} 道题，请确认后录入")
+                        existing = st.session_state.get("qb_ocr_items") or []
+                        st.session_state["qb_ocr_items"] = existing + new_items
+                        st.success(f"识别完成，新增 {len(new_items)} 道题（已累计 {len(existing) + len(new_items)} 道），可继续上传或直接录入")
                     except Exception as e:
                         st.error(f"识别失败：{e}")
 
@@ -267,7 +268,6 @@ with tab1:
                 st.caption(f"已上传：题目页 {len(files_q)} 张 · 答案页 {len(files_a)} 张")
                 if st.button("🔍 开始识别并配对", type="primary", key="btn_qb_dual_ocr"):
                     try:
-                        total = len(files_q) + len(files_a)
                         prog = st.progress(0, text=f"第①步：识别题目页（共{len(files_q)}张）…")
                         q_text = _do_ocr_single(files_q)
                         prog.progress(40, text=f"第①步：识别答案页（共{len(files_a)}张）…")
@@ -275,17 +275,39 @@ with tab1:
                         prog.progress(70, text="第②步：文字模型按题号配对…")
                         raw_json = _structure_dual(q_text, a_text)
                         prog.progress(95, text="解析结果…")
-                        items = _parse_items(raw_json)
+                        new_items = _parse_items(raw_json)
                         prog.empty()
-                        st.session_state["qb_ocr_items"] = items
-                        st.success(f"配对完成，共 {len(items)} 道题，请逐题确认后录入")
+                        existing = st.session_state.get("qb_ocr_items") or []
+                        st.session_state["qb_ocr_items"] = existing + new_items
+                        st.success(f"配对完成，新增 {len(new_items)} 道题（已累计 {len(existing) + len(new_items)} 道），可继续上传或直接录入")
                     except Exception as e:
                         st.error(f"识别失败：{e}")
 
-        if st.session_state.get("qb_ocr_items"):
+        if st.session_state.get("qb_ocr_items") is not None:
             items = st.session_state["qb_ocr_items"]
+
+            # 顶部操作栏
+            st.divider()
+            hcol1, hcol2, hcol3 = st.columns([3, 1, 1])
+            with hcol1:
+                st.markdown(f"**📋 待录入题目：共 {len(items)} 道**（可继续上传图片追加）")
+            with hcol2:
+                if st.button("＋ 手动补充一题", key="btn_add_blank"):
+                    st.session_state["qb_ocr_items"].append({"题目": "", "答案": "", "评分细则": [], "总分": 0})
+                    st.rerun()
+            with hcol3:
+                if st.button("🗑️ 清空重来", key="btn_ocr_clear"):
+                    st.session_state["qb_ocr_items"] = None
+                    st.rerun()
+
+            # 逐题编辑
+            to_delete = None
             for i, item in enumerate(items):
-                with st.expander(f"第 {i+1} 题（点击编辑）", expanded=True):
+                with st.expander(f"第 {i+1} 题{'（空题，请填写）' if not item.get('题目') else ''}", expanded=not item.get("题目")):
+                    dcol, _ = st.columns([5, 1])
+                    with _:
+                        if st.button("删除", key=f"ocr_del_{i}"):
+                            to_delete = i
                     q_val = st.text_area("题目", value=item.get("题目", ""),
                                          key=f"ocr_q_{i}", height=100)
                     a_val = st.text_area("答案", value=item.get("答案", ""),
@@ -293,7 +315,6 @@ with tab1:
                     items[i]["题目"] = q_val
                     items[i]["答案"] = a_val
 
-                    # 显示并可编辑评分细则
                     raw_criteria = item.get("评分细则", [])
                     if f"ocr_criteria_{i}" not in st.session_state:
                         st.session_state[f"ocr_criteria_{i}"] = raw_criteria
@@ -302,6 +323,11 @@ with tab1:
                     items[i]["评分细则"] = ocr_criteria
                     items[i]["总分"] = ocr_pts
 
+            if to_delete is not None:
+                st.session_state["qb_ocr_items"].pop(to_delete)
+                st.rerun()
+
+            st.divider()
             if st.button("✅ 全部录入题库", type="primary", key="btn_ocr_import"):
                 ok = 0
                 for item in items:
