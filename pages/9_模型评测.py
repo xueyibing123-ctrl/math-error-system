@@ -46,6 +46,8 @@ TEST_CASES = [
          student="180×3=540千米", expected=False),
 ]
 
+CASE_TYPES = list(dict.fromkeys(c["type"] for c in TEST_CASES))
+
 # ── 模型列表（四大家族） ──────────────────────────────────────
 MODEL_GROUPS = {
     "🧠 GLM（智谱）": {
@@ -69,30 +71,27 @@ MODEL_GROUPS = {
     },
 }
 
-# 默认勾选各家代表模型
-_DEFAULT = {"glm-4-flash", "qwen-max", "deepseek-v4-pro", "doubao-seed-2.0-pro"}
+_DEFAULT_MODELS = {"glm-4-flash", "qwen-max", "deepseek-v4-pro", "doubao-seed-2.0-pro"}
 
-EVAL_SYSTEM = (
-    "你是小学作业批改助手。根据题目和参考答案，判断学生答案是否正确。\n"
-    "规则：选择/判断题答案一致才算对；计算题最终结果正确即可，格式不限；"
-    "应用题同义表述算对；"分"可代表"分钟"等单位缩写允许。\n"
-    "严格输出JSON（不加代码块）：{\"correct\": true或false, \"brief\": \"一句话原因\"}"
-)
+EVAL_SYSTEM = '''你是小学作业批改助手。根据题目和参考答案，判断学生答案是否正确。
+规则：选择/判断题答案一致才算对；计算题最终结果正确即可，格式不限；
+应用题同义表述算对；"分"可代表"分钟"等单位缩写允许。
+严格输出JSON（不加代码块）：{"correct": true或false, "brief": "一句话原因"}'''
 
 # ── ① 选择模型 ────────────────────────────────────────────
 st.subheader("① 选择要评测的模型")
-selected_models: dict[str, str] = {}
+selected_models: dict = {}
 cols = st.columns(len(MODEL_GROUPS))
 for col, (group_name, models) in zip(cols, MODEL_GROUPS.items()):
     with col:
         st.markdown(f"**{group_name}**")
         for label, mid in models.items():
-            if st.checkbox(label, key=f"eval_{mid}", value=(mid in _DEFAULT)):
+            if st.checkbox(label, key=f"eval_{mid}", value=(mid in _DEFAULT_MODELS)):
                 selected_models[label] = mid
 
 st.divider()
 
-# ── ② 评测设置 & 启动 ─────────────────────────────────────
+# ── ② 评测信息 & 启动 ─────────────────────────────────────
 st.subheader("② 开始评测")
 
 with st.expander("📋 查看 8 道测试题", expanded=False):
@@ -106,16 +105,11 @@ with st.expander("📋 查看 8 道测试题", expanded=False):
 n_models = len(selected_models)
 st.caption(
     f"已选 **{n_models}** 个模型 · {len(TEST_CASES)} 道测试题 · "
-    f"共 {n_models * len(TEST_CASES)} 个任务并行运行 · 预计 15-40 秒"
+    f"共 {n_models * len(TEST_CASES)} 个任务并行 · 预计 15-40 秒"
 )
 
-if st.button("🚀 开始评测", type="primary", disabled=n_models == 0):
-    if n_models == 0:
-        st.warning("请至少选择一个模型")
-        st.stop()
-
-    # results[model_label][case_idx] = {model_says, expected, correct_eval, elapsed, brief}
-    results: dict[str, list] = {lbl: [None] * len(TEST_CASES) for lbl in selected_models}
+if st.button("🚀 开始评测", type="primary", disabled=(n_models == 0)):
+    results: dict = {lbl: [None] * len(TEST_CASES) for lbl in selected_models}
 
     def _run_one(model_label, model_id, case_idx, case):
         start = time.time()
@@ -127,14 +121,12 @@ if st.button("🚀 开始评测", type="primary", disabled=n_models == 0):
             )
             raw = chat(model=model_id, system=EVAL_SYSTEM, user=user_msg, temperature=0.1)
             elapsed = round(time.time() - start, 1)
-            # 鲁棒解析：直接从原始文本提取 correct 字段
             m_correct = re.search(r'"correct"\s*:\s*(true|false)', raw, re.IGNORECASE)
-            m_brief   = re.search(r'"brief"\s*:\s*"([^"]*)"', raw)
+            m_brief = re.search(r'"brief"\s*:\s*"([^"]*)"', raw)
             if m_correct:
                 model_says = m_correct.group(1).lower() == "true"
                 brief = m_brief.group(1) if m_brief else raw[:80]
             else:
-                # 最后兜底：整体看是否含 true/false
                 model_says = None
                 brief = f"解析失败：{raw[:80]}"
         except Exception as e:
@@ -179,12 +171,10 @@ if st.button("🚀 开始评测", type="primary", disabled=n_models == 0):
     summary_rows = []
     for lbl, case_results in results.items():
         valid = [r for r in case_results if r is not None]
-        n = len(TEST_CASES)
-        acc = sum(r["correct_eval"] for r in valid) / n
+        acc = sum(r["correct_eval"] for r in valid) / len(TEST_CASES)
         avg_t = sum(r["elapsed"] for r in valid) / len(valid) if valid else 0
 
-        # 按题型统计
-        by_type: dict[str, list] = {}
+        by_type: dict = {}
         for i, r in enumerate(case_results):
             t = TEST_CASES[i]["type"]
             by_type.setdefault(t, []).append(r["correct_eval"] if r else False)
@@ -192,39 +182,38 @@ if st.button("🚀 开始评测", type="primary", disabled=n_models == 0):
         row = {
             "排名": "",
             "模型": lbl,
-            "总准确率": f"{acc*100:.0f}%",
+            "总准确率": f"{acc * 100:.0f}%",
             "平均耗时(s)": f"{avg_t:.1f}",
             "_acc": acc,
             "_t": avg_t,
         }
-        for t, vals in by_type.items():
-            row[t] = f"{sum(vals)/len(vals)*100:.0f}%"
+        for t in CASE_TYPES:
+            vals = by_type.get(t, [False, False])
+            row[t] = f"{sum(vals) / len(vals) * 100:.0f}%"
         summary_rows.append(row)
 
     summary_rows.sort(key=lambda x: (-x["_acc"], x["_t"]))
+    medals = ["🥇", "🥈", "🥉"]
     for i, r in enumerate(summary_rows):
-        r["排名"] = ["🥇", "🥈", "🥉"][i] if i < 3 else f"  {i+1}"
+        r["排名"] = medals[i] if i < 3 else str(i + 1)
 
-    display_cols = ["排名", "模型", "总准确率"] + list(TEST_CASES[0]["type"] and
-        [t for t in dict.fromkeys(c["type"] for c in TEST_CASES)]) + ["平均耗时(s)"]
-    display_cols = [c for c in display_cols if c in summary_rows[0]]
-
+    display_cols = ["排名", "模型", "总准确率"] + CASE_TYPES + ["平均耗时(s)"]
     df = pd.DataFrame(summary_rows)[display_cols]
     st.dataframe(df, hide_index=True, use_container_width=True)
 
-    # 最佳推荐
     best = summary_rows[0]
-    best_acc = best["总准确率"]
-    best_t = best["平均耗时(s)"]
-    st.info(f"💡 推荐：**{best['模型'].split('（')[0]}** — 准确率 {best_acc}，平均耗时 {best_t}s")
+    st.info(
+        f"💡 推荐：**{best['模型'].split('（')[0]}** "
+        f"— 准确率 {best['总准确率']}，平均耗时 {best['平均耗时(s)']}s"
+    )
 
     # ── ④ 逐题详细对比 ────────────────────────────────────
     st.subheader("④ 逐题详细对比")
     for i, case in enumerate(TEST_CASES):
         exp_label = "✅正确" if case["expected"] else "❌错误"
         with st.expander(
-            f"第{i+1}题 · {case['label']} · 正确答案 `{case['correct']}` · "
-            f"学生答案 `{case['student']}` · 预期 {exp_label}"
+            f"第{i + 1}题 · {case['label']} · "
+            f"正确答案 `{case['correct']}` · 学生答案 `{case['student']}` · 预期 {exp_label}"
         ):
             cols2 = st.columns(len(selected_models))
             for col2, lbl in zip(cols2, selected_models):
@@ -238,10 +227,10 @@ if st.button("🚀 开始评测", type="primary", disabled=n_models == 0):
                         st.warning("⚠️ 解析失败")
                         st.caption(r["brief"])
                     elif r["correct_eval"]:
+                        verdict = "判为正确" if r["model_says"] else "判为错误"
                         st.success("✅ 判断正确")
-                        verdict = "判为正确" if r["model_says"] else "判为错误"
-                        st.caption(f"{verdict} · {r['elapsed']}s\n{r['brief']}")
+                        st.caption(f"{verdict} · {r['elapsed']}s  \n{r['brief']}")
                     else:
-                        st.error("❌ 判断有误")
                         verdict = "判为正确" if r["model_says"] else "判为错误"
-                        st.caption(f"{verdict} · {r['elapsed']}s\n{r['brief']}")
+                        st.error("❌ 判断有误")
+                        st.caption(f"{verdict} · {r['elapsed']}s  \n{r['brief']}")
