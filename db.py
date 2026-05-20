@@ -316,6 +316,11 @@ def init_question_bank():
             cur.execute(f"ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS {col} {defn}")
         except Exception:
             pass
+    # 向量列（需 pgvector 扩展；未启用时静默跳过）
+    try:
+        cur.execute("ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS embedding vector(1024)")
+    except Exception:
+        pass
     conn.commit()
     cur.close()
     conn.close()
@@ -349,12 +354,28 @@ def _compute_phash(image_bytes):
         return None
 
 
+def _update_embedding(question_id: int, embedding: list):
+    """将向量写入题库（pgvector 未启用时静默跳过）。"""
+    vec_str = "[" + ",".join(f"{x:.8f}" for x in embedding) + "]"
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("UPDATE question_bank SET embedding=%s::vector WHERE id=%s",
+                    (vec_str, question_id))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception:
+        pass
+
+
 def add_question(subject, grade, source, question_text, correct_answer,
                  total_points=0, scoring_criteria=None, uploaded_by="",
                  image_bytes=None):
     """
     scoring_criteria: list of {"criterion": str, "points": int}
     image_bytes: raw bytes of the question image (optional); will be compressed and hashed.
+    录入后自动异步生成文本向量（需 pgvector + DASHSCOPE_API_KEY）。
     """
     import json
     criteria_json = json.dumps(scoring_criteria or [], ensure_ascii=False)
@@ -375,22 +396,72 @@ def add_question(subject, grade, source, question_text, correct_answer,
     conn.commit()
     cur.close()
     conn.close()
-    return row["id"] if row else None
+    qid = row["id"] if row else None
+
+    # 生成并存储向量（失败不影响题目保存）
+    if qid:
+        try:
+            from llm_client import embed
+            vec = embed(question_text)
+            if vec:
+                _update_embedding(qid, vec)
+        except Exception:
+            pass
+    return qid
+
+
+def backfill_embeddings(limit: int = 20) -> tuple:
+    """
+    为还没有向量的题目批量生成向量。
+    返回 (成功数, 失败数)，每次最多处理 limit 道。
+    """
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, question_text FROM question_bank "
+            "WHERE embedding IS NULL ORDER BY id LIMIT %s", (limit,)
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+    except Exception:
+        return 0, 0
+
+    from llm_client import embed
+    ok = fail = 0
+    for row in rows:
+        try:
+            vec = embed(row["question_text"])
+            if vec:
+                _update_embedding(row["id"], vec)
+                ok += 1
+            else:
+                fail += 1
+        except Exception:
+            fail += 1
+    return ok, fail
 
 
 def search_question_bank(question_text: str, subject: str = None,
                          threshold: float = 0.65, image_bytes=None):
     """
-    在题库中检索最相似的题目。
-    - 文字模糊匹配（difflib）为主；
-    - 若提供 image_bytes 且题库条目有 pHash，则加入图像指纹得分。
-    返回 {'question_text','correct_answer','source','similarity',
-           'total_points','scoring_criteria'} 或 None。
+    三路融合检索：向量相似度（语义）+ difflib（文字）+ pHash（图像）。
+    - 向量：DashScope text-embedding-v3，需 pgvector 已启用
+    - 任一路不可用时自动降级，始终有结果
     """
     import json
     from difflib import SequenceMatcher
 
-    # 计算查询图片的 pHash（若提供）
+    # 1. 查询向量
+    query_vec = None
+    try:
+        from llm_client import embed
+        query_vec = embed(question_text)
+    except Exception:
+        pass
+
+    # 2. 查询图像 pHash
     query_phash = None
     if image_bytes:
         try:
@@ -401,43 +472,69 @@ def search_question_bank(question_text: str, subject: str = None,
         except Exception:
             pass
 
+    # 3. 从数据库取候选（有向量时顺带计算余弦相似度）
     conn = get_conn()
     cur = conn.cursor()
-    if subject:
+    where = " WHERE subject=%s" if subject else ""
+    params = [subject] if subject else []
+    rows = None
+    has_vec = False
+
+    if query_vec:
+        vec_str = "[" + ",".join(f"{x:.8f}" for x in query_vec) + "]"
+        try:
+            cur.execute(
+                "SELECT id, question_text, correct_answer, source, total_points, "
+                "scoring_criteria, image_hash, "
+                "COALESCE(1-(embedding<=>%s::vector), 0) AS vec_sim "
+                f"FROM question_bank{where}",
+                [vec_str] + params
+            )
+            rows = cur.fetchall()
+            has_vec = True
+        except Exception:
+            rows = None  # pgvector 未启用，降级
+
+    if rows is None:
         cur.execute(
             "SELECT id, question_text, correct_answer, source, total_points, "
-            "scoring_criteria, image_hash FROM question_bank WHERE subject=%s", (subject,)
+            f"scoring_criteria, image_hash FROM question_bank{where}",
+            params
         )
-    else:
-        cur.execute(
-            "SELECT id, question_text, correct_answer, source, total_points, "
-            "scoring_criteria, image_hash FROM question_bank"
-        )
-    rows = cur.fetchall()
+        rows = cur.fetchall()
+
     cur.close()
     conn.close()
     if not rows:
         return None
 
+    # 4. 三路评分，取最高
     q_norm = question_text.replace(" ", "").replace("\n", "")
     best, best_score = None, 0.0
+
     for row in rows:
         db_norm = row["question_text"].replace(" ", "").replace("\n", "")
         text_score = SequenceMatcher(None, q_norm, db_norm).ratio()
+        vec_score = float(row["vec_sim"]) if has_vec and row.get("vec_sim") else 0.0
 
-        # pHash 得分：汉明距离 ≤ 10 视为同一题，距离每增加 1 扣 0.05
         phash_score = 0.0
         if query_phash and row.get("image_hash"):
             try:
                 import imagehash
                 db_phash = imagehash.hex_to_hash(row["image_hash"])
-                dist = query_phash - db_phash  # hamming distance (0–64)
-                phash_score = max(0.0, 1.0 - dist / 20.0)
+                phash_score = max(0.0, 1.0 - (query_phash - db_phash) / 20.0)
             except Exception:
                 pass
 
-        # 加权融合：有 pHash 时 7:3，否则纯文字
-        combined = text_score * 0.7 + phash_score * 0.3 if phash_score > 0 else text_score
+        # 加权：有什么用什么，优先向量
+        if vec_score > 0 and phash_score > 0:
+            combined = text_score * 0.2 + vec_score * 0.6 + phash_score * 0.2
+        elif vec_score > 0:
+            combined = text_score * 0.3 + vec_score * 0.7
+        elif phash_score > 0:
+            combined = text_score * 0.7 + phash_score * 0.3
+        else:
+            combined = text_score
 
         if combined > best_score:
             best_score = combined

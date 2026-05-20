@@ -4,7 +4,7 @@ import base64
 import streamlit as st
 from dotenv import load_dotenv
 from db import (init_question_bank, add_question, get_all_questions,
-                delete_question, count_questions)
+                delete_question, count_questions, backfill_embeddings)
 from llm_client import chat, chat_with_image, chat_with_images
 from ui import icon_title
 
@@ -46,10 +46,18 @@ st.caption("录入题目、答案与评分细则，分析时自动检索并按�
 uploaded_by = st.session_state.get("user", {}).get("username", "teacher")
 total = count_questions()
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 col1.metric("题库总量", f"{total} 题")
 col2.metric("支持功能", "按点给分")
-col3.metric("检索方式", "智能检索")
+col3.metric("检索方式", "向量+文字+图像")
+with col4:
+    if st.button("⚡ 补全题目向量", help="为尚未生成语义向量的题目批量生成，提升检索准确率"):
+        with st.spinner("正在生成向量，请稍候…"):
+            ok, fail = backfill_embeddings(limit=50)
+        if ok + fail == 0:
+            st.info("所有题目已有向量，无需补全")
+        else:
+            st.success(f"完成：{ok} 道生成成功，{fail} 道失败")
 
 st.divider()
 

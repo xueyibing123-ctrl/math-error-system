@@ -154,6 +154,29 @@ def chat_with_image(image_b64: str, mime_type: str, prompt: str, model="qwen-vl-
         raise RuntimeError(f"详细错误：\n{traceback.format_exc()}") from e
 
 
+def embed(text: str, model: str = "text-embedding-v3") -> list | None:
+    """
+    生成文本向量（DashScope 兼容接口）。
+    返回 list[float] 或 None（失败时静默返回 None，不抛异常）。
+    """
+    api_key = os.getenv("DASHSCOPE_API_KEY")
+    if not api_key:
+        return None
+    try:
+        with httpx.Client(timeout=15) as client:
+            resp = client.post(
+                "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings",
+                headers={"Authorization": f"Bearer {api_key}",
+                         "Content-Type": "application/json"},
+                json={"model": model, "input": text, "encoding_format": "float"},
+            )
+        if resp.is_success:
+            return resp.json()["data"][0]["embedding"]
+        return None
+    except Exception:
+        return None
+
+
 def chat_with_images(images: list, prompt: str, model="qwen-vl-max", temperature=0.1):
     """
     多图输入视觉模型调用。
