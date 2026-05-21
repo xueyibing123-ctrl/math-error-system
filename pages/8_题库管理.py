@@ -48,10 +48,34 @@ icon_title("assets/icons/批量分析.svg", "题库管理")
 st.caption("录入题目、答案与评分细则，分析时自动检索并按点给分。")
 
 uploaded_by = st.session_state.get("user", {}).get("username", "teacher")
-total = count_questions()
 
+# ── 顶部筛选器（学科 + 年级，影响统计和列表）────────────
+f_col1, f_col2, f_col3 = st.columns([2, 2, 4])
+with f_col1:
+    filter_subject = st.selectbox(
+        "学科筛选", ["全部"] + SUBJECTS, key="qb_filter_subject"
+    )
+with f_col2:
+    filter_grade = st.selectbox(
+        "年级筛选", ["全部"] + GRADES, key="qb_filter_grade"
+    )
+with f_col3:
+    st.write("")  # 占位
+
+_fs = filter_subject if filter_subject != "全部" else None
+_fg = filter_grade if filter_grade != "全部" else None
+
+total_all  = count_questions()
+total_filt = count_questions(subject=_fs, grade=_fg)
+
+# ── 统计指标（根据筛选实时更新）──────────────────────────
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("题库总量", f"{total} 题")
+if _fs or _fg:
+    label = " · ".join(x for x in [filter_subject, filter_grade] if x != "全部")
+    col1.metric("筛选结果", f"{total_filt} 题", delta=f"共{total_all}题", delta_color="off")
+    col1.caption(f"📌 {label}")
+else:
+    col1.metric("题库总量", f"{total_all} 题")
 col2.metric("支持功能", "按点给分")
 with col3:
     st.markdown("**检索方式**")
@@ -124,9 +148,11 @@ with tab1:
 
     col_s, col_g = st.columns(2)
     with col_s:
-        subject = st.selectbox("学科", SUBJECTS, key="qb_subject")
+        _subj_idx = SUBJECTS.index(_fs) if _fs and _fs in SUBJECTS else 0
+        subject = st.selectbox("学科", SUBJECTS, index=_subj_idx, key="qb_subject")
     with col_g:
-        grade = st.selectbox("年级", GRADES, key="qb_grade")
+        _grade_idx = GRADES.index(_fg) if _fg and _fg in GRADES else 0
+        grade = st.selectbox("年级", GRADES, index=_grade_idx, key="qb_grade")
     source = st.text_input("来源（如：人教版八年级数学上册期中卷）", key="qb_source")
 
     if input_mode == "✏️ 手动输入":
@@ -464,14 +490,15 @@ with tab1:
 # Tab2: 题库列表
 # ══════════════════════════════════════════════════════
 with tab2:
-    col_f1, col_f2 = st.columns([1, 2])
-    with col_f1:
-        filter_subject = st.selectbox("筛选学科", ["全部"] + SUBJECTS, key="qb_filter_sub")
-    with col_f2:
-        keyword = st.text_input("关键词搜索", placeholder="题目关键词...", key="qb_keyword")
+    # 顶部已有学科/年级筛选，这里只加关键词搜索
+    if _fs or _fg:
+        label_hint = " · ".join(x for x in [filter_subject, filter_grade] if x != "全部")
+        st.caption(f"📌 当前筛选：{label_hint}（可在顶部修改）")
+    keyword = st.text_input("关键词搜索", placeholder="题目内容、来源关键词…", key="qb_keyword")
 
     questions = get_all_questions(
-        subject=None if filter_subject == "全部" else filter_subject,
+        subject=_fs,
+        grade=_fg,
         keyword=keyword or None
     )
     st.markdown(f"共 **{len(questions)}** 条记录")

@@ -561,7 +561,7 @@ def search_question_bank(question_text: str, subject: str = None,
     return None
 
 
-def get_all_questions(subject=None, keyword=None, limit=200):
+def get_all_questions(subject=None, grade=None, keyword=None, limit=200):
     conn = get_conn()
     cur = conn.cursor()
     sql = ("SELECT id, subject, grade, source, question_text, correct_answer, "
@@ -572,6 +572,9 @@ def get_all_questions(subject=None, keyword=None, limit=200):
     if subject:
         sql += " AND subject=%s"
         params.append(subject)
+    if grade:
+        sql += " AND grade=%s"
+        params.append(grade)
     if keyword:
         sql += " AND (question_text ILIKE %s OR correct_answer ILIKE %s OR source ILIKE %s)"
         params.extend([f"%{keyword}%", f"%{keyword}%", f"%{keyword}%"])
@@ -593,13 +596,18 @@ def delete_question(question_id: int):
     conn.close()
 
 
-def count_questions(subject=None):
+def count_questions(subject=None, grade=None):
     conn = get_conn()
     cur = conn.cursor()
+    sql = "SELECT COUNT(*) as cnt FROM question_bank WHERE 1=1"
+    params = []
     if subject:
-        cur.execute("SELECT COUNT(*) as cnt FROM question_bank WHERE subject=%s", (subject,))
-    else:
-        cur.execute("SELECT COUNT(*) as cnt FROM question_bank")
+        sql += " AND subject=%s"
+        params.append(subject)
+    if grade:
+        sql += " AND grade=%s"
+        params.append(grade)
+    cur.execute(sql, params)
     row = cur.fetchone()
     cur.close()
     conn.close()
