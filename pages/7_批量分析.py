@@ -519,10 +519,39 @@ if st.session_state.get("batch_results"):
     total = len(results)
     correct_n = len([r for r in results if not r.get("是否有误") and r["状态"] == "✅ 完成"])
     wrong_n = len([r for r in results if r.get("是否有误")])
-    mc1, mc2, mc3 = st.columns(3)
+    mc1, mc2, mc3, mc4 = st.columns(4)
     mc1.metric("共批改", f"{total} 题")
     mc2.metric("✅ 正确", f"{correct_n} 题")
     mc3.metric("❌ 错误", f"{wrong_n} 题")
+    with mc4:
+        if wrong_n > 0:
+            st.markdown(
+                '<a href="/错题本" target="_self">'
+                '<button style="width:100%;padding:8px;background:#FF4B4B;color:white;'
+                'border:none;border-radius:6px;cursor:pointer;font-size:14px;">'
+                f'📖 查看错题本（{wrong_n}题）</button></a>',
+                unsafe_allow_html=True
+            )
+
+    # ── 彩色题号格子总览 ──────────────────────────────────
+    st.markdown("**题目概览：**")
+    badge_html = ""
+    for r in results:
+        num = r["题号"]
+        if r["状态"] != "✅ 完成":
+            color, text_color = "#cccccc", "#333"
+        elif r.get("是否有误"):
+            color, text_color = "#FF4B4B", "white"
+        else:
+            color, text_color = "#21c45d", "white"
+        badge_html += (
+            f'<span title="{r.get("题目","")}" '
+            f'style="display:inline-block;width:36px;height:36px;line-height:36px;'
+            f'text-align:center;border-radius:6px;margin:3px;font-weight:bold;'
+            f'font-size:13px;background:{color};color:{text_color};">{num}</span>'
+        )
+    st.markdown(f'<div style="line-height:1;">{badge_html}</div>', unsafe_allow_html=True)
+    st.caption("🟢 正确　🔴 错误　⬜ 分析失败")
 
     st.subheader("📋 批改结果")
     display_cols = [c for c in ["题号", "题目", "批改结果", "来源", "得分", "题型"] if c in df.columns]
