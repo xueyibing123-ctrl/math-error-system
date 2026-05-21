@@ -66,7 +66,11 @@ _fs = filter_subject if filter_subject != "全部" else None
 _fg = filter_grade if filter_grade != "全部" else None
 
 total_all  = count_questions()
-total_filt = count_questions(subject=_fs, grade=_fg)
+try:
+    total_filt = count_questions(subject=_fs, grade=_fg)
+except TypeError:
+    # 兼容旧版 db.py（不支持 grade 参数时降级）
+    total_filt = count_questions(subject=_fs)
 
 # ── 统计指标（根据筛选实时更新）──────────────────────────
 col1, col2, col3, col4 = st.columns(4)

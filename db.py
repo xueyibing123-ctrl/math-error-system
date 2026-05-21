@@ -612,3 +612,5 @@ def count_questions(subject=None, grade=None):
     cur.close()
     conn.close()
     return row["cnt"] if row else 0
+
+# db.py v2 — count_questions/get_all_questions 支持 grade 参数
