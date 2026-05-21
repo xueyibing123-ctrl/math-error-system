@@ -331,7 +331,8 @@ for row in filtered:
                     st.session_state.wb_redo_results.pop(rid, None)
                     st.rerun()
             else:
-                st.error(f"❌ 还有不足{f'，错因：`{new_tag}`·{ERROR_DESC.get(new_tag,\"\")}' if new_tag else ''}")
+                _err_hint = f"，错因：`{new_tag}`·{ERROR_DESC.get(new_tag, '')}" if new_tag else ""
+                st.error(f"❌ 还有不足{_err_hint}")
                 st.warning(feedback)
                 if st.button("🔄 再试一次", key=f"retry_redo_{rid}"):
                     st.session_state.wb_redo_mode.add(rid)
