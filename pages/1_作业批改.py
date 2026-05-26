@@ -284,6 +284,40 @@ def _direct_compare(student_ans: str, correct_ans: str):
     return None
 
 
+_OCR_VERIFY_SYSTEM = """你是OCR识别结果的审核专家。你会收到一段从学生作业图片中识别出来的文字，请逐题检查识别结果是否合理。
+
+检查重点：
+1. 数字是否合理（常见误读：8↔3、1↔7、0↔6、5↔6）
+2. 符号是否正确（+、-、×、÷、=、>、<、√、×）
+3. 学生答案部分是否有明显不合逻辑的内容（如"5+3=19"这种基本不可能的情况）
+4. 填空/选择题的答案字符是否合理
+
+处理规则：
+- 若某题识别结果明显异常，在该题"学生答案"后加上【⚠️可能误读，建议核对】
+- 若整体识别结果合理，原样输出，不做修改
+- 不要修改题目内容本身，只在可疑处添加标注
+- 保持原有格式（题目/题型/学生答案 的分隔结构）不变
+
+直接输出处理后的识别结果，不要加任何说明。""".strip()
+
+
+def verify_ocr(ocr_text: str, model: str = None) -> str:
+    """对OCR识别结果进行自我复核，在可疑处添加⚠️标注。"""
+    if not ocr_text or not ocr_text.strip():
+        return ocr_text
+    _model = model or os.getenv("DASHSCOPE_MODEL", "qwen-max")
+    try:
+        verified = chat(
+            model=_model,
+            system=_OCR_VERIFY_SYSTEM,
+            user=f"以下是OCR识别结果，请审核：\n\n{ocr_text}",
+            temperature=0.1,
+        )
+        return verified.strip() if verified.strip() else ocr_text
+    except Exception:
+        return ocr_text  # 复检失败时静默降级，不影响主流程
+
+
 def _build_batch_ref(bank: dict) -> str:
     ref = (f"\n\n【📚 题库参考答案（来源：{bank['source'] or '题库'}）】\n{bank['correct_answer']}\n"
            f"请以此为标准答案判断学生作答，不要自行推导答案。")
@@ -729,6 +763,9 @@ with tab_photo:
                         )
                         ocr_raw = chat_with_image(image_b64=img_b64_2, mime_type=mime2,
                                                   model=OCR_MODEL, prompt=OCR_PROMPT)
+                        # 🔍 OCR复核：让文本模型自我检查识别结果
+                        with st.spinner("复核识别结果…"):
+                            ocr_raw = verify_ocr(ocr_raw, model=MODEL)
                         problems = safe_json_loads(ocr_raw)
                         if isinstance(problems, list) and problems:
                             st.session_state.hw_dual_problems = problems
@@ -884,6 +921,8 @@ with tab_photo:
                     b64 = base64.b64encode(compressed).decode()
                     text = chat_with_image(model=OCR_MODEL, image_b64=b64,
                                            mime_type=mime, prompt=OCR_PROMPT_BATCH)
+                    # 🔍 OCR复核（线程内执行，不阻塞其他页面）
+                    text = verify_ocr(text.strip(), model=MODEL)
                     return i, text.strip()
 
                 prog = st.progress(0, text=f"并行识别 {len(all_bytes)} 张图片…")
@@ -1025,6 +1064,8 @@ with tab_single:
                             model=OCR_MODEL,
                             prompt='请识别图片内容，分两部分：1）题目（含选项）2）学生解题步骤或答案。数学符号用$...$包裹LaTeX格式。严格按JSON输出：{"题目": "...", "步骤": "..."}'
                         )
+                        # 🔍 OCR复核
+                        ocr_text = verify_ocr(ocr_text, model=MODEL)
                         try:
                             ocr_json = safe_json_loads(ocr_text)
                             st.session_state.hw_ocr_text = ocr_json.get("题目", "")
@@ -1032,7 +1073,11 @@ with tab_single:
                         except Exception:
                             st.session_state.hw_ocr_text = ocr_text
                             st.session_state.hw_ocr_steps = ""
-                        st.success("识别完成，已自动填入")
+                        # 若有⚠️标注，提示用户
+                        if "⚠️" in ocr_text:
+                            st.warning("识别完成，部分内容可能有误读，已标注⚠️，请核对后再提交")
+                        else:
+                            st.success("识别完成，已自动填入")
                     except Exception as e:
                         st.error(f"识别失败：{e}")
 
