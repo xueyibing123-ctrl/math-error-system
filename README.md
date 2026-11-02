@@ -25,8 +25,8 @@ AI驱动 · 精准诊断 · 因材施教
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/你的用户名/你的仓库名.git
-cd 你的仓库名
+git clone https://github.com/xueyibing123-ctrl/math-error-system.git
+cd math-error-system
 ```
 
 ### 2. 安装依赖
@@ -51,6 +51,8 @@ DASHSCOPE_MODEL=qwen-plus
 ```
 
 > 阿里云 API Key 获取地址：https://bailian.console.aliyun.com → 右上角「API Key 管理」
+
+> API Key 只保存在本地，不要提交到仓库。
 
 ### 4. 启动系统
 
